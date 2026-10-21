@@ -5,7 +5,7 @@
       "queries": [
         {
           "name": "Аналитик и похожее",
-          "target_title": "аналитик|analyst|операционный менеджер|operations manager|операционист|ассистент|assistant|помощник|специалист по данным|сметчик|табельщик|администратор баз данных|помощник|google sheets|excel|data|SQL|разработчик|python",
+          "target_title": "аналитик|analyst|операционный менеджер|operations manager|операционист|ассистент|assistant|помощник|специалист по данным|сметчик|табельщик|администратор баз данных|google sheets|google таблицы|excel|data|SQL|python|разработчик",
           "exclude_words": [
             "senior",
             "руководитель",
@@ -23,6 +23,7 @@
             "автор",
             "редактор",
             "трейдер",
+            "рекрутер",
             "продажник",
             "агент",
             "researcher",
@@ -36,11 +37,32 @@
             "водитель",
             "прораб",
             "региональный представитель",
+            "курьер",
             "преподаватель",
             "колл-центр",
             "media buyer",
             "медиабайер",
             "контент-завод"
+          ],
+          "core_keywords": [
+            "sql",
+            "bi",
+            "python",
+            "excel",
+            "аналитик",
+            "анализ данных",
+            "данные",
+            "дашборд",
+            "отчет",
+            "tableau",
+            "power bi",
+            "clickhouse",
+            "pandas",
+            "статистик",
+            "метрик",
+            "воронк",
+            "ab-тест",
+            "a/b-тест"
           ],
           "employments": [
             "full",
@@ -51,6 +73,11 @@
             "remote",
             "hybrid",
             "office"
+          ],
+          "experiences": [
+            "noExperience",
+            "between1And3",
+            "between3And6"
           ],
           "periods": [
             1,

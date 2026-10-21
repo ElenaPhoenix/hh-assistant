@@ -2,9 +2,8 @@ import json
 import os
 import time
 import urllib.parse
-import re
-from rapidfuzz import fuzz
 from shared_api import load_config, call_api, DATA_DIR
+from filters import check_filters
 
 VACANCIES_FILE = os.path.join(DATA_DIR, "vacancies_detailed.json")
 CITY_AREA_MAP = {
@@ -20,36 +19,6 @@ VALID_EMPLOYMENTS = {"full", "part", "project"}
 PER_PAGE = 100
 MAX_PAGES = 20
 
-CORE_KEYWORDS = [
-    "sql",
-    "bi",
-    "python",
-    "excel",
-    "аналитик",
-    "анализ данных",
-    "данные",
-    "дашборд",
-    "отчет",
-    "tableau",
-    "power bi",
-    "clickhouse",
-    "pandas",
-    "статистик",
-    "метрик",
-    "воронк",
-    "ab-тест",
-    "a/b-тест",
-    "1с",
-    "sap",
-    "битрикс",
-    "json",
-    "api",
-]
-
-LOOKALIKE_MAP = str.maketrans(
-    {"a": "а", "c": "с", "e": "е", "o": "о", "p": "р", "x": "х", "y": "у"}
-)
-
 
 def get_area_id(city):
     return CITY_AREA_MAP.get((city or "").strip().lower(), 113)
@@ -59,55 +28,21 @@ def encode(value):
     return urllib.parse.quote(str(value), safe="")
 
 
-def normalize_for_match(text):
-    if not text:
-        return ""
-    t = text.lower().translate(LOOKALIKE_MAP)
-    t = re.sub(r"[\s\-_/\\|]+", " ", t)
-    return t.strip()
-
-
-def check_filters(name, desc, target_title, exclude_words):
-    name_norm = normalize_for_match(name)
-    desc_norm = normalize_for_match(desc)
-
-    # 1. Стоп-слова (строгий поиск в названии)
-    for word in exclude_words:
-        w_norm = normalize_for_match(word)
-        if w_norm and w_norm in name_norm:
-            return False
-
-    # 2. Явные аналитические названия пропускаем без проверки CORE_KEYWORDS
-    strong_analytics = ["аналитик", "analyst", "data", "bi", "sql", "python"]
-    if any(sw in name_norm for sw in strong_analytics):
-        return True
-
-    # 3. Для остальных названий требуем CORE_KEYWORDS в описании (сниппете)
-    has_core_kw = any(kw in desc_norm for kw in CORE_KEYWORDS)
-    if not has_core_kw:
-        return False
-
-    # 4. Если CORE_KEYWORDS есть, проверяем совпадение с target
-    if not target_title:
-        return True
-
-    targets = [normalize_for_match(t) for t in target_title.split("|") if t.strip()]
-    if not targets:
-        return True
-
-    for t in targets:
-        if fuzz.partial_ratio(t, name_norm) >= 90 or t in desc_norm:
-            return True
-    return False
-
-
 def search_page(
-    text, area, min_salary, only_salary, employments, work_format, period, page
+    text,
+    area,
+    min_salary,
+    only_salary,
+    employments,
+    work_format,
+    experience,
+    period,
+    page,
 ):
     params = [
         f"text={encode(text)}",
         f"area={area}",
-        "experience=between1And3",
+        f"experience={experience}",
         f"per_page={PER_PAGE}",
         f"page={page}",
         "order_by=publication_time",
@@ -177,6 +112,8 @@ def main():
         for query in resume.get("queries", []):
             print(f"\n  >>> Запрос: {query['name']}")
             kw = query["target_title"].replace("|", " OR ")
+            core_kw = query.get("core_keywords", [])
+            experiences = query.get("experiences", ["between1And3"])
 
             for wf in query["work_formats"]:
                 hh_wf = WORK_FORMAT_MAP.get(wf, wf.upper())
@@ -184,51 +121,53 @@ def main():
                     113 if wf == "remote" else get_area_id(resume.get("city", "Москва"))
                 )
 
-                for period in query["periods"]:
-                    print(
-                        f"    [{wf.upper()} | Период: {period}] Сбор...",
-                        end=" ",
-                        flush=True,
-                    )
-                    for page in range(MAX_PAGES):
-                        data = search_page(
-                            kw,
-                            area,
-                            query["min_salary"],
-                            query["only_with_salary"],
-                            query["employments"],
-                            hh_wf,
-                            period,
-                            page,
+                for exp in experiences:
+                    for period in query["periods"]:
+                        print(
+                            f"    [{wf.upper()} | Опыт: {exp} | Период: {period}] Сбор...",
+                            end=" ",
+                            flush=True,
                         )
-                        if not data:
-                            break
-                        items = data.get("items", [])
-                        if not items:
-                            break
-
-                        for s in items:
-                            v = short_to_full(s)
-                            # Безопасное извлечение сниппета
-                            snippet = s.get("snippet") or {}
-                            desc_snippet = (
-                                (snippet.get("requirement") or "")
-                                + " "
-                                + (snippet.get("responsibility") or "")
+                        for page in range(MAX_PAGES):
+                            data = search_page(
+                                kw,
+                                area,
+                                query["min_salary"],
+                                query["only_with_salary"],
+                                query["employments"],
+                                hh_wf,
+                                exp,
+                                period,
+                                page,
                             )
+                            if not data:
+                                break
+                            items = data.get("items", [])
+                            if not items:
+                                break
 
-                            if check_filters(
-                                v["name"],
-                                desc_snippet,
-                                query["target_title"],
-                                query["exclude_words"],
-                            ):
-                                all_new[v["id"]] = v
+                            for s in items:
+                                v = short_to_full(s)
+                                snippet = s.get("snippet") or {}
+                                desc_snippet = (
+                                    (snippet.get("requirement") or "")
+                                    + " "
+                                    + (snippet.get("responsibility") or "")
+                                )
 
-                        if page + 1 >= data.get("pages", 0):
-                            break
-                        time.sleep(0.5)
-                    print(f"найдено {len(all_new)} (всего)")
+                                if check_filters(
+                                    v["name"],
+                                    desc_snippet,
+                                    query["target_title"],
+                                    query["exclude_words"],
+                                    core_kw,
+                                ):
+                                    all_new[v["id"]] = v
+
+                            if page + 1 >= data.get("pages", 0):
+                                break
+                            time.sleep(0.5)
+                        print(f"найдено {len(all_new)} (всего)")
 
     print(f"\nВсего уникальных подходящих вакансий: {len(all_new)}")
     merged = dict(existing)

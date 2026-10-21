@@ -4,7 +4,6 @@ import re
 import numpy as np
 import argparse
 from sentence_transformers import CrossEncoder
-from rapidfuzz import fuzz
 from state_helper import (
     load_state,
     save_state,
@@ -12,6 +11,7 @@ from state_helper import (
     add_processed_ids,
     set_phase,
 )
+from filters import check_filters
 
 CONFIG_FILE = "config.json"
 DATA_DIR = "data"
@@ -22,10 +22,6 @@ VACANCIES_FILE = os.path.join(DATA_DIR, "vacancies_detailed.json")
 CROSS_ENCODER = "DiTy/cross-encoder-russian-msmarco"
 SIGMOID_CENTER = 0.80
 SIGMOID_TEMPERATURE = 0.04
-
-LOOKALIKE_MAP = str.maketrans(
-    {"a": "а", "c": "с", "e": "е", "o": "о", "p": "р", "x": "х", "y": "у"}
-)
 
 
 def load_config():
@@ -47,59 +43,6 @@ def load_vacancies():
 
 def clean_text(text):
     return re.sub(r"\s+", " ", text).strip() if text else ""
-
-
-def normalize_for_match(text):
-    if not text:
-        return ""
-    t = text.lower().translate(LOOKALIKE_MAP)
-    t = re.sub(r"[\s\-_/\\|]+", " ", t)
-    return t.strip()
-
-
-def check_filters(name, desc, target_title, exclude_words, resume_skills):
-    """
-    Фильтр по правилам пользователя:
-    - 95% совпадение слова-исключения с названием -> отбрасываем.
-    - 95% совпадение ключевого слова с названием -> пропускаем.
-    - 95% совпадение ключевого слова с описанием -> пропускаем.
-    - Наличие любого навыка из резюме в описании -> пропускаем.
-    """
-    name_norm = normalize_for_match(name)
-    desc_norm = normalize_for_match(desc)
-
-    # 1. Стоп-слова (исключения)
-    for word in exclude_words:
-        w_norm = normalize_for_match(word)
-        if w_norm and fuzz.partial_ratio(w_norm, name_norm) >= 95:
-            return False
-
-    # 2. Ключевые фразы
-    targets = [normalize_for_match(t) for t in target_title.split("|") if t.strip()]
-
-    # Проверяем название на 95% совпадение с целевыми фразами
-    if targets:
-        for t in targets:
-            if fuzz.partial_ratio(t, name_norm) >= 95:
-                return True
-
-    # 3. Навыки из резюме
-    # Если в описании вакансии встречается хотя бы один навык из резюме
-    if resume_skills:
-        for skill in resume_skills:
-            s_norm = normalize_for_match(skill)
-            if s_norm and fuzz.partial_ratio(s_norm, desc_norm) >= 95:
-                return True
-
-    # 4. Ключевые фразы в описании (если в названии не совпало)
-    if targets:
-        for t in targets:
-            if t in desc_norm:  # Строгое вхождение в описание
-                return True
-            if fuzz.token_set_ratio(t, desc_norm) >= 95:
-                return True
-
-    return False
 
 
 def calibrate_score(cross_raw):
@@ -143,15 +86,18 @@ def match_resume(resume_id, config_index):
     state = load_state()
 
     resume_text = clean_text(resume_data["full_text"])
-    # Извлекаем навыки из спарсенного резюме (если есть)
     resume_skills = resume_data.get("key_skills", [])
-    if isinstance(resume_skills, str):  # на случай если строка
+    if isinstance(resume_skills, str):
         resume_skills = [s.strip() for s in resume_skills.split(",")]
 
     threshold = config["threshold"]
     resume_params = config["resumes"][config_index]
     queries = resume_params.get("queries", [])
-    query = queries[0] if queries else {"target_title": "аналитик", "exclude_words": []}
+    query = (
+        queries[0]
+        if queries
+        else {"target_title": "аналитик", "exclude_words": [], "core_keywords": []}
+    )
 
     processed_ids = get_processed_ids(state, resume_id)
     filtered = []
@@ -159,16 +105,19 @@ def match_resume(resume_id, config_index):
     for v in vacancies:
         if v.get("id") in processed_ids:
             continue
-
         name = v.get("name") or ""
         desc = v.get("full_description") or ""
 
-        # Применяем новый жесткий фильтр
+        # Используем общую функцию фильтрации
         if not check_filters(
-            name, desc, query["target_title"], query["exclude_words"], resume_skills
+            name,
+            desc,
+            query["target_title"],
+            query["exclude_words"],
+            query.get("core_keywords", []),
+            resume_skills,
         ):
             continue
-
         filtered.append(v)
 
     print(f"Резюме ID: {resume_id}")
@@ -194,15 +143,13 @@ def match_resume(resume_id, config_index):
     results = []
     for i, v in enumerate(filtered):
         base = calibrate_score(cross_raw[i])
-        final = base
-
         results.append(
             {
                 "id": v.get("id"),
                 "name": v.get("name"),
                 "employer": v.get("employer"),
                 "link": v.get("link"),
-                "match_score": round(final, 1),
+                "match_score": round(base, 1),
                 "base_score": round(base, 1),
                 "cross_raw": round(float(cross_raw[i]), 3),
                 "salary_from": v.get("salary_from"),
