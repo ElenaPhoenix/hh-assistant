@@ -1,0 +1,5 @@
+2026/10/14-19:14:28.319 4714 Reusing MANIFEST C:\Users\User\Desktop\hh_etl_project\chrome_profile\Default\Local Storage\leveldb/MANIFEST-000001
+2026/10/14-19:14:28.322 4714 Recovering log #7
+2026/10/14-19:14:28.328 4714 Reusing old log C:\Users\User\Desktop\hh_etl_project\chrome_profile\Default\Local Storage\leveldb/000007.log 
+2026/10/14-19:16:17.128 4714 Level-0 table #11: started
+2026/10/14-19:16:17.135 4714 Level-0 table #11: 12107 bytes OK

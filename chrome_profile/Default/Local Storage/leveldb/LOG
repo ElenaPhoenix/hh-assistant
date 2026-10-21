@@ -1,0 +1,11 @@
+2026/10/14-19:20:26.172 14c8 Reusing MANIFEST C:\Users\User\Desktop\hh_etl_project\chrome_profile\Default\Local Storage\leveldb/MANIFEST-000001
+2026/10/14-19:20:26.177 14c8 Recovering log #7
+2026/10/14-19:20:26.177 14c8 Level-0 table #10: started
+2026/10/14-19:20:26.184 14c8 Level-0 table #10: 12107 bytes OK
+2026/10/14-19:20:26.184 14c8 Recovering log #10
+2026/10/14-19:20:26.193 14c8 Reusing old log C:\Users\User\Desktop\hh_etl_project\chrome_profile\Default\Local Storage\leveldb/000010.log 
+2026/10/14-19:20:26.199 14c8 Delete type=0 #7
+2026/10/14-19:20:26.199 14c8 Delete type=2 #11
+2026/10/14-19:24:23.003 51f4 Level-0 table #12: started
+2026/10/14-19:24:23.012 51f4 Level-0 table #12: 10318 bytes OK
+2026/10/14-19:24:23.014 51f4 Delete type=0 #10
