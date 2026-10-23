@@ -1,6 +1,22 @@
-.env
-data/
+# Окружение
 venv/
+.venv/
 __pycache__/
 *.pyc
+*.pyo
+
+# Секреты
+.env
+config.json
+state.json
+
+# Данные (кеш и результаты)
+data/
+
+# Старые артефакты Playwright
+chrome_profile/
+hh_session.json
+
+# Системные файлы
 .DS_Store
+Thumbs.db

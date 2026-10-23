@@ -1,7 +1,0 @@
-2026/10/14-19:14:31.211 31b0 Reusing MANIFEST C:\Users\User\Desktop\hh_etl_project\chrome_profile\Default\IndexedDB\https_hh.ru_0.indexeddb.leveldb/MANIFEST-000001
-2026/10/14-19:14:31.212 31b0 Recovering log #4
-2026/10/14-19:14:31.212 31b0 Reusing old log C:\Users\User\Desktop\hh_etl_project\chrome_profile\Default\IndexedDB\https_hh.ru_0.indexeddb.leveldb/000004.log 
-2026/10/14-19:14:32.104 2234 Level-0 table #8: started
-2026/10/14-19:14:32.105 2234 Level-0 table #8: 1331 bytes OK
-2026/10/14-19:14:32.107 2234 Delete type=0 #4
-2026/10/14-19:14:32.108 2234 Manual compaction at level-0 from '\x00\x04\x00\x00\x00' @ 72057594037927935 : 1 .. '\x00\x05\x00\x00\x00' @ 0 : 0; will stop at (end)

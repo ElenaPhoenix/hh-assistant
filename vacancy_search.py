@@ -1,9 +1,9 @@
 import json
 import os
 import time
-import urllib.parse
-from shared_api import load_config, call_api, DATA_DIR
-from filters import check_filters
+from shared_api import call_api
+from utils import load_config, encode_url, DATA_DIR
+from filters import check_name_filters
 
 VACANCIES_FILE = os.path.join(DATA_DIR, "vacancies_detailed.json")
 CITY_AREA_MAP = {
@@ -15,7 +15,6 @@ CITY_AREA_MAP = {
     "россия": 113,
 }
 WORK_FORMAT_MAP = {"remote": "REMOTE", "hybrid": "HYBRID", "office": "ON_SITE"}
-VALID_EMPLOYMENTS = {"full", "part", "project"}
 PER_PAGE = 100
 MAX_PAGES = 20
 
@@ -24,25 +23,22 @@ def get_area_id(city):
     return CITY_AREA_MAP.get((city or "").strip().lower(), 113)
 
 
-def encode(value):
-    return urllib.parse.quote(str(value), safe="")
-
-
 def search_page(
     text,
     area,
     min_salary,
     only_salary,
     employments,
-    work_format,
-    experience,
+    work_formats,
+    experiences,
     period,
+    professional_roles,
+    excluded_text,
     page,
 ):
     params = [
-        f"text={encode(text)}",
+        f"text={encode_url(text)}",
         f"area={area}",
-        f"experience={experience}",
         f"per_page={PER_PAGE}",
         f"page={page}",
         "order_by=publication_time",
@@ -53,10 +49,19 @@ def search_page(
         params.append("only_with_salary=true")
     if period > 0:
         params.append(f"period={period}")
-    for e in employments:
-        params.append(f"employment={e}")
-    if work_format:
-        params.append(f"work_format={work_format}")
+
+    if employments:
+        params.append(f"employment={','.join(employments)}")
+    if work_formats:
+        params.append(f"work_format={','.join(work_formats)}")
+    if experiences:
+        params.append(f"experience={','.join(experiences)}")
+
+    for role_id in professional_roles:
+        params.append(f"professional_role={role_id}")
+
+    if excluded_text:
+        params.append(f"excluded_text={encode_url(excluded_text)}")
 
     status, data = call_api("/vacancies?" + "&".join(params), timeout=60)
     return data if status == "ok" and isinstance(data, dict) else None
@@ -111,63 +116,60 @@ def main():
 
         for query in resume.get("queries", []):
             print(f"\n  >>> Запрос: {query['name']}")
-            kw = query["target_title"].replace("|", " OR ")
-            core_kw = query.get("core_keywords", [])
-            experiences = query.get("experiences", ["between1And3"])
 
-            for wf in query["work_formats"]:
-                hh_wf = WORK_FORMAT_MAP.get(wf, wf.upper())
-                area = (
-                    113 if wf == "remote" else get_area_id(resume.get("city", "Москва"))
-                )
+            kw = query.get("target_title", "аналитик").replace("|", " OR ")
+            excl = ", ".join(query.get("exclude_words", []))
+            roles = query.get("professional_roles", [])
+            if roles:
+                print(f"    Профессиональные роли: {roles}")
 
-                for exp in experiences:
-                    for period in query["periods"]:
-                        print(
-                            f"    [{wf.upper()} | Опыт: {exp} | Период: {period}] Сбор...",
-                            end=" ",
-                            flush=True,
-                        )
-                        for page in range(MAX_PAGES):
-                            data = search_page(
-                                kw,
-                                area,
-                                query["min_salary"],
-                                query["only_with_salary"],
-                                query["employments"],
-                                hh_wf,
-                                exp,
-                                period,
-                                page,
-                            )
-                            if not data:
-                                break
-                            items = data.get("items", [])
-                            if not items:
-                                break
+            formats = query.get("work_formats", ["remote"])
+            hh_formats = [WORK_FORMAT_MAP.get(f, f.upper()) for f in formats]
+            area = (
+                113
+                if "remote" in formats
+                else get_area_id(resume.get("city", "Москва"))
+            )
 
-                            for s in items:
-                                v = short_to_full(s)
-                                snippet = s.get("snippet") or {}
-                                desc_snippet = (
-                                    (snippet.get("requirement") or "")
-                                    + " "
-                                    + (snippet.get("responsibility") or "")
-                                )
+            for period in query["periods"]:
+                print(f"    [Период: {period}] Сбор...", end=" ", flush=True)
+                for page in range(MAX_PAGES):
+                    data = search_page(
+                        kw,
+                        area,
+                        query["min_salary"],
+                        query["only_with_salary"],
+                        query["employments"],
+                        hh_formats,
+                        query["experiences"],
+                        period,
+                        roles,
+                        excl,
+                        page,
+                    )
+                    if not data:
+                        break
+                    items = data.get("items", [])
+                    if not items:
+                        break
 
-                                if check_filters(
-                                    v["name"],
-                                    desc_snippet,
-                                    query["target_title"],
-                                    query["exclude_words"],
-                                    core_kw,
-                                ):
-                                    all_new[v["id"]] = v
+                    for s in items:
+                        v = short_to_full(s)
+                        if roles:
+                            if check_name_filters(
+                                v["name"], "", query["exclude_words"]
+                            ):
+                                all_new[v["id"]] = v
+                        else:
+                            if check_name_filters(
+                                v["name"], query["target_title"], query["exclude_words"]
+                            ):
+                                all_new[v["id"]] = v
 
-                            if page + 1 >= data.get("pages", 0):
-                                break
-                            time.sleep(0.5)
-                        print(f"найдено {len(all_new)} (всего)")
+                    if page + 1 >= data.get("pages", 0):
+                        break
+                    time.sleep(0.5)
+                print(f"найдено {len(all_new)} (всего)")
 
     print(f"\nВсего уникальных подходящих вакансий: {len(all_new)}")
     merged = dict(existing)
@@ -177,11 +179,12 @@ def main():
             merged[vid] = v
             truly_new += 1
 
-    print(f"Новых вакансий (которых не было в базе): {truly_new}")
-    need_details = [vid for vid, v in merged.items() if not v.get("full_description")]
-    print(f"Требуется догрузить описание: {len(need_details)}")
+    print(f"Новых вакансий: {truly_new}")
+
+    need_details = [vid for vid, v in all_new.items() if not v.get("full_description")]
 
     if need_details:
+        print(f"Требуется догрузить описание: {len(need_details)}")
         for i, vid in enumerate(need_details, 1):
             print(f"  [{i}/{len(need_details)}] id={vid}...", end=" ", flush=True)
             st, data = call_api(f"/vacancies/{vid}")
@@ -193,6 +196,8 @@ def main():
             if i % 50 == 0:
                 save_all(merged)
                 print(" (сохранено)")
+    else:
+        print("Новых вакансий без описания нет. Догрузка не требуется.")
 
     total = save_all(merged)
     print(f"\nВсего вакансий в базе: {total}")

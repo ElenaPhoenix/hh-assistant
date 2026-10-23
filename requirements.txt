@@ -3,6 +3,5 @@ urllib3
 python-dotenv
 numpy
 sentence-transformers
-rapidfuzz
 psycopg2-binary
-patchright
+tqdm

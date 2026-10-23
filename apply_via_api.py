@@ -18,18 +18,21 @@ from state_helper import (
     set_phase,
 )
 from shared_api import (
-    load_config,
-    load_resume,
-    load_matches,
-    resume_id_from_url,
     check_vacancy_status,
     send_negotiation,
     TokenManager,
     generate_letter,
-    load_fixed_letter,
+)
+from utils import (
+    load_config,
+    load_resume,
+    load_matches,
+    resume_id_from_url,
     LETTERS_DIR,
+    load_fixed_letter,
 )
 from dedupe import dedupe_passed
+from ui_helper import ask_yes_no, print_error, print_success, print_warning, print_info
 
 PAUSE_MIN = 5
 PAUSE_MAX = 10
@@ -48,7 +51,6 @@ def process_vacancy(
 ):
     vid = vacancy["id"]
     print("  Проверяем возможность отклика...")
-
     check = check_vacancy_status(vid, resume_id)
 
     if check == "closed":
@@ -56,13 +58,11 @@ def process_vacancy(
         add_denied_id(state, resume_id, vid)
         save_state(state)
         return "denied"
-
     if check == "already_applied":
-        print("  ℹ️ Уже откликались на эту вакансию.")
+        print("  ℹ️ Уже откликались.")
         add_applied_id(state, resume_id, vid)
         save_state(state)
         return "already"
-
     if check == "test_required":
         print("  ⚠️ Требуется тест. Сохраняем в очередь.")
         add_needs_test(
@@ -79,11 +79,9 @@ def process_vacancy(
         )
         save_state(state)
         return "test_required"
-
     if check == "unknown":
         print("  ⚠️ Не удалось проверить статус. Пробуем отправить.")
 
-    # Логика получения письма
     if use_fixed_letter:
         print("  Используем фиксированное письмо...")
         letter = load_fixed_letter()
@@ -93,27 +91,17 @@ def process_vacancy(
         letter, key_phrase = generate_letter(
             token_mgr, resume_text, vacancy, vacancy["match_score"]
         )
-
         if not letter:
-            print(
-                "  ❌ Не удалось сгенерировать письмо через GigaChat. Пробуем фиксированное..."
-            )
+            print("  ❌ Не удалось сгенерировать письмо. Пробуем фиксированное...")
             letter = load_fixed_letter()
             key_phrase = None
             if not letter:
-                # Если и фиксированного нет, то это критическая ошибка,
-                # но мы не можем остановить процесс здесь, поэтому просто пропускаем
-                print(
-                    "  ❌ Файл с фиксированным письмом отсутствует! Пропускаем вакансию."
-                )
+                print("  ❌ Файл с фиксированным письмом отсутствует! Пропускаем.")
                 return "failed"
-
         if key_phrase:
             print(f"  Ключевая фраза: «{key_phrase}»")
-
     print(f"  Письмо готово ({len(letter)} символов).")
 
-    # Сохраняем лог
     os.makedirs(LETTERS_DIR, exist_ok=True)
     letters_log_path = os.path.join(LETTERS_DIR, f"{resume_id}.json")
     letters_log = {}
@@ -121,7 +109,7 @@ def process_vacancy(
         try:
             with open(letters_log_path, "r", encoding="utf-8") as f:
                 letters_log = json.load(f)
-        except json.JSONDecodeError:
+        except:
             letters_log = {}
 
     letters_log[str(vid)] = {
@@ -145,7 +133,6 @@ def process_vacancy(
         with open(letters_log_path, "w", encoding="utf-8") as f:
             json.dump(letters_log, f, ensure_ascii=False, indent=2)
         return "sent"
-
     if status == "test_required":
         print("  ⚠️ Требуется тест. Сохраняем в очередь.")
         add_needs_test(
@@ -165,7 +152,6 @@ def process_vacancy(
         with open(letters_log_path, "w", encoding="utf-8") as f:
             json.dump(letters_log, f, ensure_ascii=False, indent=2)
         return "test_required"
-
     if status == "denied":
         print("  ❌ Работодатель не принимает отклик.")
         add_denied_id(state, resume_id, vid)
@@ -198,7 +184,6 @@ def main():
     else:
         config_index, _ = get_current_resume(state, config)
         if config_index is None:
-            print("Не удалось определить резюме.")
             return
         args.index = config_index
 
@@ -207,13 +192,11 @@ def main():
 
     resume_data = load_resume(resume_id)
     if not resume_data:
-        print(f"Резюме не найдено: {resume_id}. Запусти resume_parser.py")
         return
     resume_text = resume_data["full_text"]
 
     matches = load_matches(resume_id)
     if not matches:
-        print(f"Результаты матчинга не найдены: {resume_id}. Запусти matcher.py")
         return
     passed_raw = matches.get("passed", [])
     passed = dedupe_passed(passed_raw)
@@ -231,84 +214,68 @@ def main():
         and v["id"] not in needs_test_ids
     ]
 
-    deduped_count = len(passed_raw) - len(passed)
-
     print(f"\n{'=' * 60}")
     print(f"РЕЗЮМЕ: {resume_data.get('title', resume_id)}")
     print(f"Прошли порог: {len(passed_raw)}")
-    if deduped_count > 0:
-        print(f"Удалено дублей: {deduped_count} (уникальных: {len(passed)})")
+    if len(passed_raw) > len(passed):
+        print(
+            f"Удалено дублей: {len(passed_raw) - len(passed)} (уникальных: {len(passed)})"
+        )
     print(f"Уже откликнуто: {len(applied & {v['id'] for v in passed})}")
-    print(f"Требуют теста (в очереди): {len(needs_test_ids)}")
-    print(f"Отклонено работодателем: {len(denied & {v['id'] for v in passed})}")
-    print(f"К отправке сейчас: {len(to_apply)}")
-    print(f"Режим: {'DRY-RUN' if args.dry_run else 'РЕАЛЬНЫЙ'}")
+    print(f"Требуют теста: {len(needs_test_ids)}")
+    print(f"Отклонено: {len(denied & {v['id'] for v in passed})}")
+    print(f"К отправке: {len(to_apply)}")
     print(f"{'=' * 60}\n")
 
     if not to_apply:
-        print("Нечего отправлять.")
         return
-
-    for i, v in enumerate(to_apply, 1):
-        print(f"  {i}. {v['match_score']}% - {v['name'][:60]} ({v['employer'][:30]})")
-    print()
-
-    if args.limit:
-        to_apply = to_apply[: args.limit]
-        print(f"Ограничено до {len(to_apply)}.\n")
 
     if args.dry_run:
         for i, v in enumerate(to_apply, 1):
-            print(f"[{i}/{len(to_apply)}] {v['id']} — {v['name'][:60]}")
-        print("\nРежим: DRY-RUN (ничего не отправлено)")
+            print(f"[{i}] {v['id']} — {v['name'][:60]}")
         return
 
-    print("Получаем access_token GigaChat...")
+    print("Подключаемся к GigaChat...")
+    token_mgr = None
+    use_fixed_letter = False
+
     try:
         token_mgr = TokenManager()
-        print(f"Токен получен. Остаток токенов: {token_mgr.remaining_tokens}\n")
+        print_success(f"Токен получен. Остаток токенов: {token_mgr.remaining_tokens}\n")
     except Exception as e:
-        print(f"❌ Ошибка GigaChat: {e}")
-        print("Переключаемся на фиксированное письмо, так как GigaChat недоступен.")
-        token_mgr = None
+        print_error(f"Не удалось подключиться к GigaChat: {e}")
+        print_warning("Это может быть связано с проблемами сети или VPN.")
 
-    # Проверка токенов ПЕРЕД началом
-    use_fixed_letter = False
-    if token_mgr is None or token_mgr.remaining_tokens <= 1000:
-        print(
-            f"⚠️ ВНИМАНИЕ! Остаток токенов GigaChat: {token_mgr.remaining_tokens if token_mgr else 0}"
-        )
-        print("Требуется фиксированное письмо.")
-        use_fixed_letter = True
-
-        if not load_fixed_letter():
-            print(
-                "\n❌ КРИТИЧЕСКАЯ ОШИБКА: Файл data/fixed_letter.txt не найден или пуст!"
-            )
-            print("Создайте его с текстом письма и запустите скрипт заново.")
-            sys.exit(1)
+        if ask_yes_no("Продолжить отправку, используя фиксированное письмо?"):
+            use_fixed_letter = True
+            if not load_fixed_letter():
+                print_error("Файл data/fixed_letter.txt не найден!")
+                sys.exit(1)
         else:
-            print("✅ Фиксированное письмо загружено.\n")
+            print("Отправка отменена. Проверьте соединение и запустите снова.")
+            return
+
+    # Проверка токенов, если GigaChat доступен
+    if token_mgr and token_mgr.remaining_tokens <= 1000:
+        print_warning(
+            f"ВНИМАНИЕ! Остаток токенов GigaChat: {token_mgr.remaining_tokens}"
+        )
+        if ask_yes_no("Переключиться на фиксированное письмо?"):
+            use_fixed_letter = True
+            if not load_fixed_letter():
+                print_error("Файл data/fixed_letter.txt не найден!")
+                sys.exit(1)
 
     set_phase(state, resume_id, "applying")
     save_state(state)
-
     stats = {"sent": 0, "test_required": 0, "denied": 0, "failed": 0, "already": 0}
 
     for i, vacancy in enumerate(to_apply, 1):
         vid = vacancy["id"]
         print(f"\n[{i}/{len(to_apply)}] {vid} — {vacancy['name'][:60]}")
 
-        # Динамическая проверка токенов в процессе
         if not use_fixed_letter and token_mgr and token_mgr.remaining_tokens <= 1000:
-            print(
-                f"  ⚠️ Остаток токенов упал до {token_mgr.remaining_tokens}. Переключаемся на фикс-письмо."
-            )
-            if not load_fixed_letter():
-                print(
-                    "  ❌ Файл с фиксированным письмом отсутствует! Останавливаем процесс."
-                )
-                sys.exit(1)
+            print_warning("⚠️ Токены на исходе. Переключаемся на фикс-письмо.")
             use_fixed_letter = True
 
         status = process_vacancy(
