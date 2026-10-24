@@ -157,10 +157,15 @@ Cross-Encoder обрабатывает пару "резюме-вакансия" 
 ## Автор
 
 Елена Малоросиянцева
+
 GitHub: ElenaPhoenix
+
 Резюме-сайт: elenaphoenix.github.io/cv
+
 Telegram: @yeganebirlane
+
 Email: latikayegane@yandex.ru
+
 Mob.: +79163266925
 
 *Pet-проект, разработанный как демонстрация навыков работы с API, базами данных, NLP и AI-инструментами.*
