@@ -1,3 +1,4 @@
+# --- Runtime (нужны для работы программы) ---
 requests
 urllib3
 python-dotenv
@@ -5,3 +6,6 @@ numpy
 sentence-transformers
 psycopg2-binary
 tqdm
+
+# --- Dev (нужны только для тестирования) ---
+pytest
