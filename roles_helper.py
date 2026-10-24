@@ -1,13 +1,10 @@
 import json
 import os
-import re
 import requests
-from rapidfuzz import fuzz
-from utils import DATA_DIR  # <-- ИСПРАВЛЕНО: теперь берем из utils
+from utils import DATA_DIR
 
 ROLES_FILE = os.path.join(DATA_DIR, "professional_roles.json")
 ROLES_URL = "https://api.hh.ru/professional_roles"
-
 
 def load_professional_roles(force_refresh=False):
     if os.path.exists(ROLES_FILE) and not force_refresh:
@@ -30,8 +27,8 @@ def load_professional_roles(force_refresh=False):
         print(f"Ошибка загрузки справочника: {e}")
         return []
 
-
-def suggest_roles_by_keywords(keywords, threshold=80):
+def suggest_roles_by_keywords(keywords):
+    """Автоматически подбирает ID ролей по ключевым словам (простое вхождение)."""
     roles = load_professional_roles()
     if not roles:
         return []
@@ -41,18 +38,6 @@ def suggest_roles_by_keywords(keywords, threshold=80):
         if not kw_norm:
             continue
         for role in roles:
-            if fuzz.partial_ratio(kw_norm, role["name"].lower()) >= threshold:
+            if kw_norm in role["name"].lower():
                 found_ids.add(role["id"])
     return sorted(found_ids)
-
-
-def validate_search_query(query):
-    if not query:
-        return True, ""
-    if query.count("(") != query.count(")"):
-        return False, "Непарные скобки"
-    if query.count('"') % 2 != 0:
-        return False, "Непарные двойные кавычки"
-    if re.search(r"[<>]", query):
-        return False, "Недопустимые символы (< или >)"
-    return True, ""
