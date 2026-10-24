@@ -1,0 +1,29 @@
+version: "3.8"
+
+services:
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: hh_vacancies
+    ports:
+      - "5433:5432" # Пробрасываем на 5433, как в .env
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  app:
+    build: .
+    depends_on:
+      - db
+    env_file:
+      - .env
+    environment:
+      - DB_HOST=db # Внутри Docker база доступна по имени сервиса "db"
+    volumes:
+      - ./data:/app/data
+      - ./state.json:/app/state.json
+      - ./.env:/app/.env
+
+volumes:
+  pgdata:

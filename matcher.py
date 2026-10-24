@@ -4,7 +4,7 @@ import warnings
 import numpy as np
 import argparse
 
-# Подавляем технический мусор от HuggingFace и токенизаторов
+# Подавляем технический мусор от HuggingFace
 os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 warnings.filterwarnings("ignore")
@@ -49,6 +49,31 @@ def calibrate_score(cross_raw):
     )
 
 
+def _matches_any_query(name, queries):
+    """
+    Проверяет, подходит ли вакансия хотя бы под ОДИН поисковый запрос.
+    Возвращает True, если хотя бы один запрос пропустил вакансию.
+    """
+    for query in queries:
+        target = query.get("target_title", "")
+        excludes = query.get("exclude_words", [])
+        if check_name_filters(name, target, excludes):
+            return True
+    return False
+
+
+def _get_aggregated_skills(resume_data, queries):
+    """
+    Собирает все навыки из резюме + все ключевые слова из ВСЕХ запросов.
+    Это нужно для мягкого штрафа, когда в вакансии нет нужных технологий.
+    """
+    skills = set(resume_data.get("key_skills", []) or [])
+    for query in queries:
+        for kw in query.get("core_keywords", []):
+            skills.add(kw)
+    return list(skills)
+
+
 def _merge_matches(matches_file, new_results, threshold):
     existing_all, existing_passed = {}, {}
     if os.path.exists(matches_file):
@@ -84,24 +109,16 @@ def match_resume(resume_id, config_index):
     state = load_state()
 
     resume_text = clean_text(resume_data["full_text"])
-    resume_skills = resume_data.get("key_skills", [])
-
-    if not resume_skills:
-        # Если API не отдал навыки, вытаскиваем их из конфига
-        resume_skills = (
-            config["resumes"][config_index]
-            .get("queries", [{}])[0]
-            .get("core_keywords", [])
-        )
-
     threshold = config["threshold"]
     resume_params = config["resumes"][config_index]
     queries = resume_params.get("queries", [])
-    query = (
-        queries[0]
-        if queries
-        else {"target_title": "аналитик", "exclude_words": [], "core_keywords": []}
-    )
+
+    if not queries:
+        print("В конфиге нет ни одного поискового запроса.")
+        return None
+
+    # Собираем все навыки из резюме и все ключевые слова из всех запросов
+    all_skills = _get_aggregated_skills(resume_data, queries)
 
     processed_ids = get_processed_ids(state, resume_id)
     filtered = []
@@ -111,8 +128,8 @@ def match_resume(resume_id, config_index):
             continue
         name = v.get("name") or ""
 
-        # Жесткий фильтр: проверяем только название и стоп-слова
-        if not check_name_filters(name, query["target_title"], query["exclude_words"]):
+        # Проверка: вакансия должна подойти хотя бы под один запрос
+        if not _matches_any_query(name, queries):
             continue
 
         filtered.append(v)
@@ -137,24 +154,18 @@ def match_resume(resume_id, config_index):
     pairs = [[resume_text, t] for t in vac_texts]
 
     print("Оцениваем совпадение (это может занять несколько минут)...")
-    # Встроенный прогресс-бар, максимально быстрый
     cross_raw = cross.predict(pairs, show_progress_bar=True)
 
     results = []
     for i, v in enumerate(filtered):
         base = calibrate_score(cross_raw[i])
-
-        # Мягкая проверка core_keywords (второй эшелон)
         desc_norm = normalize(v.get("full_description") or "")
-        core_kws = query.get("core_keywords", [])
         penalty = 1.0
 
-        if core_kws:
-            has_core = any(normalize(kw) in desc_norm for kw in core_kws)
-            has_skill = any(normalize(s) in desc_norm for s in resume_skills)
-
-            # Если нейросеть дала высокий балл, но в описании нет ключевых слов — слегка штрафуем
-            if not has_core and not has_skill and base > 70:
+        # Мягкий штраф: если высокий балл, но нет ни одного навыка в описании
+        if all_skills:
+            has_any_skill = any(normalize(s) in desc_norm for s in all_skills)
+            if not has_any_skill and base > 70:
                 penalty = 0.85
 
         final_score = base * penalty

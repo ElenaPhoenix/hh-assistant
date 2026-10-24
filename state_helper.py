@@ -22,8 +22,18 @@ def load_state():
 
 
 def save_state(state):
-    with open(STATE_FILE, "w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False, indent=2)
+    """Атомарная запись state.json для защиты от повреждения файла."""
+    temp_file = STATE_FILE + ".tmp"
+    try:
+        with open(temp_file, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_file, STATE_FILE)
+    except Exception as e:
+        print(f"Критическая ошибка сохранения прогресса: {e}")
+        if os.path.exists(temp_file):
+            os.remove(temp_file)
 
 
 def get_resume_state(state, resume_id):
