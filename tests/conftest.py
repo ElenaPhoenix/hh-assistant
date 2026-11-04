@@ -1,23 +1,72 @@
-import sys
-import os
-import random
-import string
-
-# Добавляем корень проекта в пути
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+import uuid
+import pytest
+import logging
 
 
-def random_string(prefix="", length=8):
-    """Генерирует случайную строку из букв и цифр."""
-    chars = string.ascii_letters + string.digits
-    return prefix + "".join(random.choices(chars, k=length))
+@pytest.fixture
+def random_string():
+    def _gen():
+        return uuid.uuid4().hex
+
+    return _gen
 
 
-def random_vacancy_name(prefix=""):
-    """Генерирует абсолютно случайное название вакансии (без статических слов)."""
-    return f"Vacancy_{random_string(prefix, 12)}"
+@pytest.fixture
+def random_vacancy_name():
+    def _gen():
+        return f"V_{uuid.uuid4().hex[:12]}"
+
+    return _gen
 
 
+@pytest.fixture
 def random_id():
-    """Генерирует случайный ID (для вакансий и откликов)."""
-    return random.randint(1, 10_000_000)
+    def _gen():
+        return uuid.uuid4().int % 1_000_000
+
+    return _gen
+
+
+@pytest.fixture
+def mock_vacancy_data():
+    return {
+        "id": 123456,
+        "name": "Python Developer",
+        "employer": "Test Corp",
+        "full_description": "Требуется Python, SQL, знание Linux.",
+        "key_skills": "Python, SQL",
+        "match_score": 85,
+        "link": "https://hh.ru/vacancy/123456",
+    }
+
+
+@pytest.fixture
+def temp_env(tmp_path, monkeypatch):
+    """Изолирует файловую систему для тестов.
+    Все пути из utils и logger перенаправляются во временную папку.
+    """
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+
+    monkeypatch.setattr("utils.DATA_DIR", str(data_dir))
+    monkeypatch.setattr(
+        "utils.VACANCIES_FILE", str(data_dir / "vacancies_detailed.json")
+    )
+    monkeypatch.setattr("utils.CONFIG_FILE", str(data_dir / "config.json"))
+    monkeypatch.setattr("utils.STATE_FILE", str(data_dir / "state.json"))
+    monkeypatch.setattr("utils.LEGACY_SETTINGS_FILE", str(data_dir / "settings.json"))
+    monkeypatch.setattr(
+        "utils.LEGACY_SETTINGS_ROOT", str(tmp_path / "settings_root.json")
+    )
+    monkeypatch.setattr("utils.RESUMES_DIR", str(data_dir / "resumes"))
+    monkeypatch.setattr("utils.MATCHES_DIR", str(data_dir / "matches"))
+    monkeypatch.setattr("utils.LETTERS_DIR", str(data_dir / "letters"))
+    monkeypatch.setattr("utils.FIXED_LETTER_FILE", str(data_dir / "fixed_letter.txt"))
+
+    monkeypatch.setattr("state_helper.STATE_FILE", str(data_dir / "state.json"))
+
+    monkeypatch.setattr("logger.LOG_FILE", str(data_dir / "app.log"))
+    logger = logging.getLogger("hh_assistant")
+    logger.handlers.clear()
+
+    return data_dir
