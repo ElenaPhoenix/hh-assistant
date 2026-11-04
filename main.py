@@ -205,7 +205,7 @@ def _fetch_vacancy_for_test(vid, state, resume_id):
                 (
                     "retry",
                     "Повторить загрузку",
-                    "Запросить вакансию с hh ещё раз",
+                    "Запросить вакансию с hh еще раз",
                 ),
             ],
             allow_cancel=True,
@@ -739,7 +739,7 @@ def main():
         elif choice == "10":
             menu_check_messages()
         elif choice == "0":
-            log.info("=== HH ASSISTANT завершён ===")
+            log.info("=== HH ASSISTANT завершен ===")
             print("До встречи!")
             break
         else:

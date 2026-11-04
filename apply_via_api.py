@@ -431,7 +431,7 @@ def main(index=None):
                     print_error(
                         f"{CONSECUTIVE_ERROR_LIMIT} ошибки подряд. "
                         f"Возможно, нет интернета или hh.ru недоступен. "
-                        f"Останавливаюсь, прогресс сохранён."
+                        f"Останавливаюсь, прогресс сохранен."
                     )
                     log.error(
                         f"apply_via_api: остановка по {CONSECUTIVE_ERROR_LIMIT} "

@@ -33,7 +33,7 @@ PERIOD_LABEL = {
     3: "3 дня",
     7: "7 дней",
     30: "30 дней",
-    0: "всё время",
+    0: "все время",
 }
 
 AREA_LABEL = {
@@ -236,7 +236,7 @@ def _load_missing_details(merged, need_details):
                         print_error(
                             f"{consecutive_failures} подряд не удалось загрузить "
                             f"описания. Похоже, hh.ru недоступен. "
-                            f"Останавливаюсь, прогресс сохранён."
+                            f"Останавливаюсь, прогресс сохранен."
                         )
                         log.error(
                             f"vacancy_search: остановка догрузки после "
@@ -254,7 +254,7 @@ def _load_missing_details(merged, need_details):
                 print(" (сохранено)")
     except KeyboardInterrupt:
         save_vacancies(merged)
-        print_warning("\nCtrl+C. Прогресс сохранён.")
+        print_warning("\nCtrl+C. Прогресс сохранен.")
         print_info("При следующем запуске догрузка продолжится.")
         return True
 
@@ -410,7 +410,7 @@ def main():
     if stopped:
         save_vacancies(merged)
         print_warning(
-            "Поиск остановлен: hh.ru недоступен. Прогресс сохранён. "
+            "Поиск остановлен: hh.ru недоступен. Прогресс сохранен. "
             "Попробуйте позже."
         )
         return
@@ -427,7 +427,7 @@ def main():
     total = save_vacancies(merged)
     print(f"\nВсего вакансий в базе: {total}")
     log.info(
-        f"Сбор завершён: новых={truly_new}, " f"всего={total}, query={query_key(query)}"
+        f"Сбор завершен: новых={truly_new}, " f"всего={total}, query={query_key(query)}"
     )
 
 
