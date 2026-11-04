@@ -1,38 +1,29 @@
-import logging
 import os
+import logging
 from logging.handlers import RotatingFileHandler
 
-DATA_DIR = "data"
+from utils import DATA_DIR
+
+os.makedirs(DATA_DIR, exist_ok=True)
+LOG_FILE = os.path.join(DATA_DIR, "app.log")
 
 
-def setup_logger():
-    """Настраивает запись логов в файл и в консоль."""
-    os.makedirs(DATA_DIR, exist_ok=True)
-    log_file = os.path.join(DATA_DIR, "app.log")
+def get_logger():
+    logger = logging.getLogger("hh_assistant")
+    logger.setLevel(logging.INFO)
 
-    formatter = logging.Formatter(
-        "%(asctime)s - %(levelname)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
-    )
+    if logger.hasHandlers():
+        logger.handlers.clear()
 
     file_handler = RotatingFileHandler(
-        log_file, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
+        LOG_FILE, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
     )
-    file_handler.setFormatter(formatter)
-    file_handler.setLevel(logging.INFO)
-
-    console_handler = logging.StreamHandler()
-    console_handler.setFormatter(formatter)
-    console_handler.setLevel(logging.INFO)
-
-    logger = logging.getLogger("hh_assistant")
-    logger.setLevel(logging.DEBUG)
-
-    if not logger.handlers:
-        logger.addHandler(file_handler)
-        logger.addHandler(console_handler)
+    file_handler.setFormatter(
+        logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+    )
+    logger.addHandler(file_handler)
 
     return logger
 
 
-# Создаем глобальный объект
-log = setup_logger()
+log = get_logger()

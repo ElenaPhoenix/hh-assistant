@@ -1,25 +1,26 @@
-# Окружение
-venv/
-.venv/
-__pycache__/
-*.pyc
-*.pyo
-
 # Секреты
 .env
-config.json
-state.json
 
-# Данные (кеш и результаты)
+# Данные (кэш, конфиги, логи)
 data/
 
-# Старые артефакты Playwright
-chrome_profile/
-hh_session.json
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
 
-# Системные файлы
+# Тесты
+.pytest_cache/
+
+# IDE
+.vscode/
+.idea/
+
+# ОС
 .DS_Store
 Thumbs.db
 
-# Тесты 
-.pytest_cache/
+# Временные файлы
+*.tmp
+*.log

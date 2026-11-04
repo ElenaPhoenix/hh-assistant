@@ -6,6 +6,7 @@ from utils import DATA_DIR
 ROLES_FILE = os.path.join(DATA_DIR, "professional_roles.json")
 ROLES_URL = "https://api.hh.ru/professional_roles"
 
+
 def load_professional_roles(force_refresh=False):
     if os.path.exists(ROLES_FILE) and not force_refresh:
         with open(ROLES_FILE, "r", encoding="utf-8") as f:
@@ -26,6 +27,7 @@ def load_professional_roles(force_refresh=False):
     except Exception as e:
         print(f"Ошибка загрузки справочника: {e}")
         return []
+
 
 def suggest_roles_by_keywords(keywords):
     """Автоматически подбирает ID ролей по ключевым словам (простое вхождение)."""
