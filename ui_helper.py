@@ -25,18 +25,20 @@ def print_info(text):
     print(f"{CYAN}{text}{RESET}")
 
 
+def plural(n, one, few, many):
+    """Склонение по числу: 1 вакансия, 2 вакансии, 5 вакансий."""
+    if n % 10 == 1 and n % 100 != 11:
+        return one
+    if 2 <= n % 10 <= 4 and (n % 100 < 10 or n % 100 >= 20):
+        return few
+    return many
+
+
 def clear_screen():
     os.system("cls" if os.name == "nt" else "clear")
 
 
 def _flush_stdin_buffer():
-    """Вычитывает из stdin все, что накопилось (Windows).
-
-    Используется внутри pause(): к моменту "Нажми Enter" в буфере может
-    лежать остаток '\r\n' от нажатия '0' при остановке дочернего процесса,
-    а также случайные клавиши. Без сброса следующий input() принял бы
-    этот остаток за пустой Enter, и пользователь не увидел бы приглашения.
-    """
     if os.name != "nt":
         return
     try:
@@ -54,9 +56,15 @@ def pause():
 
 
 def ask_yes_no(prompt, allow_cancel=False):
-    """Д/Н. Если allow_cancel - '0' возвращает None (отмена)."""
-    yes = {"д", "да", "y", "yes"}
-    no = {"н", "нет", "n", "no"}
+    # Принимаем и русские буквы, и физические клавиши при английской
+    # раскладке:
+    #   "д" -> l  (одна и та же клавиша)
+    #   "н" -> y  (одна и та же клавиша)
+    # Слова yes/no не принимаются: клавиша y физически соответствует "н",
+    # и если считать "y" как "yes", пользователь в английской раскладке
+    # ответит "нет", думая что отвечает "да".
+    yes = {"д", "да", "l", "lf"}
+    no = {"н", "нет", "y", "ytn"}
     hint = " (д/н, 0 - отмена)" if allow_cancel else " (д/н)"
     while True:
         ans = input(f"{prompt}{hint}: ").strip().lower()
@@ -121,15 +129,12 @@ def ask_int(prompt, allow_cancel=False, min_value=None, max_value=None):
 
 
 def check_stop_key():
-    """Неблокирующая проверка '0'. Вычитывает весь буфер после нажатия."""
     try:
         if os.name == "nt":
             import msvcrt
 
             if msvcrt.kbhit():
                 ch = msvcrt.getch()
-                # Вычитываем весь хвост (обычно \r\n после Enter),
-                # чтобы он не попал в следующий input().
                 while msvcrt.kbhit():
                     msvcrt.getch()
                 if ch == b"0":
@@ -150,7 +155,6 @@ def check_stop_key():
 
 
 def wait_with_stop(seconds):
-    """Ожидание с возможностью раннего выхода по '0'."""
     deadline = time.time() + seconds
     while time.time() < deadline:
         if check_stop_key():

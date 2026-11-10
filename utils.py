@@ -18,7 +18,7 @@ LEGACY_SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
 LEGACY_SETTINGS_ROOT = "settings.json"
 
 DEFAULT_THRESHOLD = 65
-DEFAULT_CONFIG = {"threshold": DEFAULT_THRESHOLD, "resumes": []}
+DEFAULT_CONFIG = {"threshold": DEFAULT_THRESHOLD, "portfolio_url": "", "resumes": []}
 
 _LEGACY_TECH_KEYS = {
     "auto_apply",
@@ -104,6 +104,7 @@ def load_config():
 def save_config(config):
     payload = {
         "threshold": int(config.get("threshold", DEFAULT_THRESHOLD)),
+        "portfolio_url": (config.get("portfolio_url") or "").strip(),
         "resumes": config.get("resumes", []),
     }
     atomic_write_json(CONFIG_FILE, payload)

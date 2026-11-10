@@ -1,10 +1,8 @@
 import os
 import logging
 from logging.handlers import RotatingFileHandler
-
 from utils import DATA_DIR
 
-os.makedirs(DATA_DIR, exist_ok=True)
 LOG_FILE = os.path.join(DATA_DIR, "app.log")
 
 

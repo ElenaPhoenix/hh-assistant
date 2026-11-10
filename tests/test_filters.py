@@ -70,13 +70,38 @@ def test_keyword_phrase_match():
 
 
 def test_exclude_priority():
-    # Слово-исключение перекрывает target_title
+    # Слово-исключение перекрывает target_title (в названии)
     assert (
         check_vacancy_relevance("Junior Python", "", "python", ["junior"], []) is False
     )
     # Слово-исключение с опечаткой (fuzzy)
     assert (
         check_vacancy_relevance("Junoir Python", "", "python", ["junior"], []) is False
+    )
+
+
+def test_exclude_only_in_description_not_block():
+    # Слово-исключение в описании, но не в названии - НЕ блокирует
+    assert (
+        check_vacancy_relevance(
+            "Аналитик данных",
+            "Работа под руководством директора",
+            "аналитик",
+            ["директор"],
+            [],
+        )
+        is True
+    )
+    # Слово-исключение в названии - блокирует
+    assert (
+        check_vacancy_relevance(
+            "Директор по аналитике",
+            "",
+            "аналитик",
+            ["директор"],
+            [],
+        )
+        is False
     )
 
 

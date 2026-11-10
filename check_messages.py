@@ -4,11 +4,20 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from logger import log
 from shared_api import call_api, fetch_all_negotiations
 from db import get_connection, tables_ready
-from ui_helper import print_success, print_error, print_info, print_warning
+from ui_helper import (
+    print_success,
+    print_error,
+    print_info,
+    print_warning,
+    check_stop_key,
+)
+
+# Статусы, в которых в чате могут быть новые сообщения от работодателя.
+# "discard" включен: там иногда приходит "мягкий отказ" сообщением.
+ACTIVE_STATES = {"active", "invited", "response", "discard"}
 
 
 def _normalize_dt(dt_str):
-    """Приводит '2026-11-03T21:15:00+0300' к ISO '2026-11-03T21:15:00+03:00'."""
     if not dt_str:
         return None
     try:
@@ -19,11 +28,43 @@ def _normalize_dt(dt_str):
         return dt_str
 
 
+def _select_chats_to_check(all_items, db_updates):
+    """Возвращает список (neg_id, hh_updated) для проверки.
+
+    Дельта-синхронизация: берем чаты в статусах ACTIVE_STATES, у которых
+    updated_at из hh отличается от hh_updated_at в БД. Чаты с одинаковым
+    updated_at пропускаем - в них нет новых сообщений.
+    """
+    to_check = []
+    for item in all_items:
+        neg_id_str = item.get("id")
+        if not neg_id_str:
+            continue
+        try:
+            neg_id = int(neg_id_str)
+        except (TypeError, ValueError):
+            continue
+
+        if neg_id not in db_updates:
+            continue
+
+        status_id = (item.get("state") or {}).get("id", "")
+        if status_id not in ACTIVE_STATES:
+            continue
+
+        hh_updated = str(item.get("updated_at")) if item.get("updated_at") else ""
+        db_updated = db_updates.get(neg_id, "")
+
+        if hh_updated != db_updated:
+            to_check.append((neg_id, hh_updated))
+
+    return to_check
+
+
 def fetch_and_save_messages(neg_id, hh_updated):
     time.sleep(random.uniform(0.2, 0.5))
     status, msg_data = call_api(f"/negotiations/{neg_id}/messages")
 
-    # Если чат удален на hh (404), чтобы не зациклиться, просто обновляем дату
     if status == "error" and "404" in str(msg_data).lower():
         log.warning(f"чат {neg_id} удален (404), пропуск")
         try:
@@ -72,7 +113,6 @@ def fetch_and_save_messages(neg_id, hh_updated):
             if cur.rowcount > 0:
                 new_count += 1
 
-        # Обновляем дату ТОЛЬКО если успешно скачали и сохранили сообщения
         cur.execute(
             "UPDATE negotiations SET hh_updated_at = %s WHERE id = %s",
             (hh_updated, neg_id),
@@ -99,18 +139,49 @@ def fetch_and_save_messages(neg_id, hh_updated):
     return new_count
 
 
+def _print_fetch_error(status):
+    if status == "captcha":
+        print_error("hh.ru требует проверки на робота. Попробуйте позже.")
+        log.error("check_messages: captcha")
+    elif status == "auth_required":
+        print_error("Сессия hh истекла. Авторизуйтесь: hh-applicant-tool authorize.")
+        log.error("check_messages: auth_required")
+    elif status == "timeout":
+        print_error("hh.ru не ответил вовремя. Проверьте интернет.")
+        log.error("check_messages: timeout")
+    else:
+        print_error(
+            "Не удалось получить отклики с hh.ru. "
+            "Подробности в data/app.log. Попробуйте через несколько минут."
+        )
+        log.error(f"check_messages: fetch failed, status={status}")
+
+
 def main():
     log.info("check_messages: старт")
     if not tables_ready():
-        print_error("Таблицы в БД не созданы. Запустите пункт 6.")
+        print_error(
+            "Таблицы в базе данных не созданы. "
+            "Запустите синхронизацию откликов (пункт 6)."
+        )
         return
 
     print_info("Скачиваем список откликов с hh.ru (это может занять пару минут)...")
-    all_items = fetch_all_negotiations(per_page=100, pause=0.1)
+    all_items, fetch_status = fetch_all_negotiations(per_page=100, pause=0.1)
+
+    if fetch_status == "stopped":
+        if not all_items:
+            print_warning("Остановлено пользователем.")
+            log.info("check_messages: остановка по '0'")
+            return
+        print_warning("Остановлено. Обрабатываю полученное...")
+    elif fetch_status != "ok":
+        _print_fetch_error(fetch_status)
+        return
 
     if not all_items:
-        print_error("Не удалось загрузить список откликов с hh.ru (0 элементов).")
-        log.error("check_messages: fetch_all_negotiations вернул пустой список")
+        print_warning("У вас нет откликов на hh.ru.")
+        log.info("check_messages: у пользователя нет откликов")
         return
 
     print_success(f"Загружено откликов с hh: {len(all_items)}")
@@ -120,62 +191,55 @@ def main():
         conn = get_connection()
         cur = conn.cursor()
     except Exception as e:
-        print_error(f"Нет подключения к БД: {e}")
+        print_error(
+            "Не удалось подключиться к базе данных. "
+            "Проверьте, что PostgreSQL запущен."
+        )
+        log.error(f"check_messages: DB connect error: {e}")
         return
 
-    # Ключи в этом словаре - числа (int), так как колонка id в БД имеет тип BIGINT
     cur.execute("SELECT id, hh_updated_at FROM negotiations")
     db_updates = {row[0]: str(row[1]) if row[1] else "" for row in cur.fetchall()}
-    log.info(f"check_messages: negotiations в БД: {len(db_updates)}")
-
-    if not db_updates:
-        print_error("База данных пуста. Сначала запустите пункт 6 (синхронизация).")
-        cur.close()
-        conn.close()
-        return
-
-    to_check = []
-    for item in all_items:
-        # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: API возвращает id как строку, а в БД это BIGINT (int)
-        neg_id_str = item.get("id")
-        if not neg_id_str:
-            continue
-        neg_id = int(neg_id_str)
-
-        if neg_id not in db_updates:
-            continue
-
-        status_id = (item.get("state") or {}).get("id", "")
-        if status_id not in ("active", "invited", "response", "discard"):
-            continue
-
-        hh_updated = str(item.get("updated_at")) if item.get("updated_at") else ""
-        db_updated = db_updates.get(neg_id, "")
-
-        if hh_updated != db_updated:
-            to_check.append((neg_id, hh_updated))
-
     cur.close()
     conn.close()
 
+    log.info(f"check_messages: negotiations в БД: {len(db_updates)}")
+
+    if not db_updates:
+        print_error("База данных пуста. Сначала запустите синхронизацию откликов.")
+        return
+
+    to_check = _select_chats_to_check(all_items, db_updates)
     log.info(f"check_messages: к проверке {len(to_check)} чатов")
 
     if not to_check:
         print_success("Нет новых сообщений (все чаты в актуальном состоянии).")
         return
 
-    print_info(f"Найдено {len(to_check)} обновленных чатов, скачиваем (5 потоков)...")
+    print_info(
+        f"Найдено {len(to_check)} обновленных чатов. "
+        f"Скачиваю содержимое (по 5 чатов одновременно)..."
+    )
+    print_warning("Остановить: нажми '0' (без Enter).")
+    print()
 
     total_new = 0
     errors = 0
     completed = 0
     step = max(1, len(to_check) // 10)
+    stopped = False
 
     with ThreadPoolExecutor(max_workers=5) as executor:
-        futures = {
-            executor.submit(fetch_and_save_messages, nid, hh_upd): nid
-            for nid, hh_upd in to_check
-        }
+        futures = {}
+        for nid, hh_upd in to_check:
+            if check_stop_key():
+                print()
+                print_warning("Получена команда остановки ('0').")
+                log.info("check_messages: остановка по '0'")
+                stopped = True
+                break
+            futures[executor.submit(fetch_and_save_messages, nid, hh_upd)] = nid
+
         for future in as_completed(futures):
             completed += 1
             try:
@@ -186,13 +250,21 @@ def main():
                 log.error(f"Ошибка потока: {exc}")
                 errors += 1
 
-            if completed % step == 0 or completed == len(to_check):
-                print(f"  Проверено {completed} из {len(to_check)}...")
+            if completed % step == 0 or completed == len(futures):
+                print(f"  Проверено {completed} из {len(futures)}...")
 
     print_success(f"Найдено новых сообщений: {total_new}")
     if errors:
         print_warning(f"Чатов с ошибкой (попробуем при следующем запуске): {errors}")
-    log.info(f"check_messages: завершено, новых={total_new}, ошибок={errors}")
+    if stopped:
+        print_warning(
+            f"Остановлено: обработано {completed} из {len(to_check)}. "
+            f"При следующем запуске остальные будут проверены."
+        )
+    log.info(
+        f"check_messages: завершено, новых={total_new}, ошибок={errors}, "
+        f"stopped={stopped}"
+    )
 
 
 if __name__ == "__main__":

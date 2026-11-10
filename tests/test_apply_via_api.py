@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import patch
-from apply_via_api import process_vacancy
+from apply_via_api import process_vacancy, CAPTCHA_HINT
 from state_helper import load_state, get_resume_state, add_needs_test, save_state
 
 
@@ -143,3 +143,21 @@ def test_process_vacancy_sent_ok(
     assert status == "sent"
     rs = get_resume_state(state, "test_rid")
     assert 123456 in rs["applied_vacancy_ids"]
+
+
+@patch("apply_via_api.check_vacancy_status")
+@patch("apply_via_api.print_info")
+def test_process_vacancy_captcha_shows_hint(
+    mock_print_info, mock_status, mock_vacancy_data, temp_env
+):
+    """При captcha показывается подсказка про VPN."""
+    state = load_state()
+    mock_status.return_value = "captcha"
+
+    status, remove = process_vacancy(
+        mock_vacancy_data, "test_rid", "text", None, state, False, "q1", "Q1", "Name"
+    )
+
+    assert status == "captcha"
+    assert remove is False
+    mock_print_info.assert_called_with(CAPTCHA_HINT)

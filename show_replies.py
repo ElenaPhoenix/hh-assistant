@@ -4,16 +4,28 @@ from ui_helper import print_info, print_warning
 
 def main():
     if not tables_ready():
-        print_warning("Таблицы в БД не созданы. Запустите пункт 6.")
+        print_warning(
+            "Таблицы в базе данных не созданы. Запустите синхронизацию (пункт 6)."
+        )
         return
 
     try:
         conn = get_connection()
-    except Exception as e:
-        print_warning(f"Нет подключения к PostgreSQL: {e}")
+    except Exception:
+        print_warning(
+            "Нет подключения к базе данных. Проверьте, что PostgreSQL запущен."
+        )
         return
 
     cur = conn.cursor()
+
+    # Дата последнего обновления negotiations в БД - приблизительная
+    # "дата синхронизации". updated_at меняется при UPSERT, так что это
+    # верхняя граница времени последней синхронизации.
+    cur.execute("SELECT MAX(updated_at) FROM negotiations;")
+    row = cur.fetchone()
+    last_sync = row[0] if row else None
+
     cur.execute("""
         WITH LastEmployerMsg AS (
             SELECT m.negotiation_id, m.text, m.created_at,
@@ -44,14 +56,21 @@ def main():
     if not rows:
         print_warning(
             "Переписок с ответами работодателей нет.\n"
-            "Если ожидались ответы - запустите пункт 6 (синхронизация), затем снова пункт 10."
+            "Если ожидались ответы - запустите синхронизацию, затем снова\n"
+            "проверку ответов (пункт 6)."
         )
         return
 
-    print_info(
-        f"\nПоследние {len(rows)} переписок с ответами работодателей (от старых к новым):\n"
-    )
+    if last_sync:
+        date_str = last_sync.strftime("%d.%m.%Y %H:%M")
+        print_info(f"Данные из локальной базы. Последняя синхронизация: {date_str}.")
+    else:
+        print_info("Данные из локальной базы.")
 
+    print_info(
+        f"\nПоследние {len(rows)} переписок с ответами работодателей "
+        f"(от старых к новым):\n"
+    )
     for row in rows:
         name, employer, text, created_at, neg_id = row
         date_str = (
@@ -62,6 +81,12 @@ def main():
         print(f"🔗 https://hh.ru/applicant/negotiations/{neg_id}")
         print(f"💬 {text or '(пусто)'}")
         print("-" * 80)
+
+    print()
+    print_warning(
+        "Если здесь не видно свежих ответов - запустите синхронизацию (пункт 6), "
+        "затем снова этот пункт."
+    )
 
 
 if __name__ == "__main__":

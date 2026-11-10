@@ -26,41 +26,46 @@ from utils import (
     load_resume,
     resume_id_from_url,
     query_key,
+    normalize,
     MATCHES_DIR,
     RESUMES_DIR,
     load_vacancies,
     atomic_write_json,
     DEFAULT_THRESHOLD,
 )
-from filters import check_vacancy_relevance
+from filters import (
+    check_vacancy_relevance,
+    _phrase_in_text,
+    _extract_words,
+    _word_match,
+)
 from dedupe import dedupe_passed
-from ui_helper import print_info
+from ui_helper import print_info, print_warning, check_stop_key
 
 TITLE_HIT_SCORE = 40
 KEYWORD_HIT_SCORE = 5
 KEYWORD_HIT_CAP = 60
 
+# Меняем при изменении логики скоринга. Включен в _query_hash:
+# после изменения matcher пересчитает все запросы заново.
+SCORER_VERSION = 3
+
 
 def _check_vacancy_area(vacancy, query, resume_data):
-    """Проверяет, подходит ли вакансия по городу и формату работы."""
     user_formats = query.get("work_formats") or ["remote"]
     user_city = str(resume_data.get("city_id") or "")
     vac_area = str(vacancy.get("area_id") or "")
     vac_formats = vacancy.get("work_formats") or []
 
-    # 1. Если формат неизвестен (старые данные) - ПРИНИМАЕМ.
     if not vac_formats:
         return True
 
-    # 2. Если это удаленка
     if "REMOTE" in vac_formats:
         if "remote" in user_formats:
             return True
 
-    # 3. Если это офис/гибрид
     if "HYBRID" in vac_formats or "ON_SITE" in vac_formats:
         if "hybrid" in user_formats or "office" in user_formats:
-            # Если у вакансии нет города - ПРИНИМАЕМ
             if not vac_area:
                 return True
             return vac_area == user_city
@@ -68,12 +73,7 @@ def _check_vacancy_area(vacancy, query, resume_data):
     return False
 
 
-def _query_hash(query, threshold, resume_data):
-    """Вычисляет хэш конфигурации запроса.
-
-    Включает гео-параметры (форматы работы и город резюме), чтобы
-    при их изменении матчер автоматически запускал полный пересчет.
-    """
+def _query_hash(query, threshold):
     payload = json.dumps(
         {
             "target_title": query.get("target_title", ""),
@@ -81,7 +81,7 @@ def _query_hash(query, threshold, resume_data):
             "core_keywords": sorted(query.get("core_keywords") or []),
             "work_formats": sorted(query.get("work_formats") or []),
             "threshold": float(threshold),
-            "city_id": str(resume_data.get("city_id") or ""),
+            "scorer_version": SCORER_VERSION,
         },
         sort_keys=True,
         ensure_ascii=False,
@@ -89,17 +89,91 @@ def _query_hash(query, threshold, resume_data):
     return hashlib.md5(payload.encode("utf-8")).hexdigest()[:12]
 
 
+def _get_skills_str(vacancy):
+    """key_skills в JSON может быть строкой или списком. Возвращаем строку."""
+    skills = vacancy.get("key_skills")
+    if not skills:
+        return ""
+    if isinstance(skills, list):
+        return ", ".join(str(s) for s in skills)
+    return str(skills)
+
+
+def _score_target(name_norm, name_words, targets):
+    """Возвращает список target_title, найденных в названии.
+
+    Использует тот же fuzzy-поиск (_phrase_in_text), что и предфильтр.
+    Без этого "аналитика" в target_title не находила бы "Аналитик" в названии,
+    хотя предфильтр ее пропустил.
+    """
+    matched = []
+    for t in targets:
+        t_norm = normalize(t)
+        if not t_norm:
+            continue
+        if _phrase_in_text(t_norm, name_norm, name_words):
+            matched.append(t)
+    return matched
+
+
+def _score_keywords(vacancy, core_keywords):
+    """Возвращает список core_keywords, найденных в описании ИЛИ навыках.
+
+    Пул = все токены описания + все токены навыков. Один kw = максимум одно
+    слово из пула; одно слово = максимум один kw. Это исключает двойной счет:
+    - "excel" в описании и навыках + kw "excel" = 1 совпадение;
+    - "анализировать" в тексте + kw ["анализ", "анализировать"] = 1 (потому что
+      "анализ" не матчится на "анализировать", а "анализировать" забирает слово);
+    - "анализу" и "анализировать" в тексте + те же kw = 2.
+
+    Однословные kw ищутся по токенам через _word_match (fuzzy).
+    Многословные kw ("power bi", "google sheets") - через _phrase_in_text
+    целиком по исходному тексту, без дедупликации с однословными (редкий случай).
+    """
+    desc_norm = normalize(vacancy.get("full_description") or "")
+    skills_norm = normalize(_get_skills_str(vacancy))
+    desc_words = _extract_words(desc_norm)
+    skills_words = _extract_words(skills_norm)
+    pool = desc_words + skills_words
+    used = set()
+    matched = []
+
+    for kw in core_keywords:
+        kw_norm = normalize(kw)
+        if not kw_norm:
+            continue
+        p_words = _extract_words(kw_norm)
+        if not p_words:
+            continue
+
+        if len(p_words) == 1:
+            word = p_words[0]
+            found = False
+            for idx in range(len(pool)):
+                if idx in used:
+                    continue
+                if _word_match(word, pool[idx]):
+                    used.add(idx)
+                    found = True
+                    break
+            if found:
+                matched.append(kw)
+        else:
+            if _phrase_in_text(kw_norm, desc_norm, desc_words) or _phrase_in_text(
+                kw_norm, skills_norm, skills_words
+            ):
+                matched.append(kw)
+
+    return matched
+
+
 def _compute_rules_score(vacancy, query):
-    name_l = (vacancy.get("name") or "").lower()
-    desc_l = (
-        (vacancy.get("full_description") or "")
-        + " "
-        + (vacancy.get("key_skills") or "")
-    ).lower()
-    targets = [
-        t.strip().lower() for t in query.get("target_title", "").split("|") if t.strip()
-    ]
-    matched_targets = [t for t in targets if t in name_l]
+    name_raw = vacancy.get("name") or ""
+    name_norm = normalize(name_raw)
+    name_words = _extract_words(name_norm)
+
+    targets = [t.strip() for t in query.get("target_title", "").split("|") if t.strip()]
+    matched_targets = _score_target(name_norm, name_words, targets)
     title_hits = len(matched_targets)
 
     if title_hits == 0:
@@ -111,7 +185,7 @@ def _compute_rules_score(vacancy, query):
         }
 
     core_keywords = query.get("core_keywords") or []
-    matched_kws = [kw for kw in core_keywords if kw.lower() in desc_l]
+    matched_kws = _score_keywords(vacancy, core_keywords)
     kw_hits = len(matched_kws)
 
     if kw_hits == 0:
@@ -206,7 +280,7 @@ def _print_score_histogram(results, threshold):
         (80, 90),
         (90, 101),
     ]
-    print_info(f"Распределение оценки соответствия (всего {len(results)}):")
+    print_info(f"Распределение оценок (всего {len(results)}):")
     max_cnt = max(
         [sum(1 for r in results if lo <= r["match_score"] < hi) for lo, hi in buckets]
         + [1]
@@ -215,7 +289,7 @@ def _print_score_histogram(results, threshold):
         cnt = sum(1 for r in results if lo <= r["match_score"] < hi)
         bar_len = int(40 * cnt / max_cnt)
         bar = "#" * bar_len
-        marker = "  <-- порог" if lo <= threshold < hi else ""
+        marker = "  <-- минимальный балл" if lo <= threshold < hi else ""
         print(f"  [{lo:3d}-{hi - 1:3d}]: {cnt:5d}  {bar}{marker}")
 
 
@@ -282,8 +356,7 @@ def _cleanup_stale_processed(state, resume_id, qid, processed_ids, vacancies):
     save_state(state)
     processed_ids -= stale
     log.info(
-        f"Matcher: снята отметка 'processed' с {len(stale)} вакансий без "
-        f"full_description (будут пересчитаны после догрузки)"
+        f"Matcher: снята отметка 'processed' с {len(stale)} вакансий без full_description"
     )
     return len(stale)
 
@@ -295,10 +368,9 @@ def match_resume(resume_id, config_index, query_id=None):
     state = load_state()
 
     threshold = float(config.get("threshold", DEFAULT_THRESHOLD))
-
     queries = config["resumes"][config_index].get("queries", [])
     if not queries:
-        print("В конфиге нет запросов.")
+        print("В настройках нет поисковых запросов.")
         return
 
     query = None
@@ -312,8 +384,7 @@ def match_resume(resume_id, config_index, query_id=None):
     qid = query_key(query)
     qname = query["name"]
 
-    # Передаем resume_data в хэш, чтобы изменение города триггерило пересчет
-    current_hash = _query_hash(query, threshold, resume_data)
+    current_hash = _query_hash(query, threshold)
     matches_file = os.path.join(MATCHES_DIR, f"{resume_id}.json")
     existing_all, existing_passed, query_hashes = _read_matches(matches_file)
 
@@ -329,15 +400,11 @@ def match_resume(resume_id, config_index, query_id=None):
     if not is_current:
         if qid in query_hashes:
             print_info(
-                f"Конфиг запроса '{qname}' изменился - полный пересчет этого запроса."
+                f"Настройки запроса '{qname}' изменились - все вакансии будут оценены заново."
             )
         elif os.path.exists(matches_file):
-            print_info(
-                f"Запрос '{qname}' новый (или формат файла результатов устарел) - "
-                f"полный пересчет."
-            )
+            print_info(f"Запрос '{qname}' новый - все вакансии будут оценены заново.")
         log.info(f"Matcher: полный пересчет qid={qid}, query_hash={current_hash}")
-
         existing_all = {k: v for k, v in existing_all.items() if k[1] != qid}
         existing_passed = {k: v for k, v in existing_passed.items() if k[1] != qid}
         processed_ids = set()
@@ -352,8 +419,17 @@ def match_resume(resume_id, config_index, query_id=None):
     skipped_applied = 0
     skipped_no_description = 0
     skipped_area = 0
+    stopped = False
+
+    print_warning("Остановить оценку: нажми '0' (без Enter). Прогресс сохранится.")
+    print()
 
     for v in vacancies.values():
+        if check_stop_key():
+            print("\n  Остановка по команде '0'.")
+            stopped = True
+            break
+
         vid = v.get("id")
         if vid in processed_ids:
             continue
@@ -379,29 +455,26 @@ def match_resume(resume_id, config_index, query_id=None):
         ):
             filtered.append(v)
 
-    print(f"Резюме: {resume_id} | Запрос: {qname} (код: {qid})")
+    print(f"Резюме: {resume_id} | Запрос: {qname}")
     print(f"Всего вакансий в базе: {len(vacancies)}")
     print(f"Проверено сейчас (новых для запроса): {len(checked_ids)}")
     if skipped_no_description:
         print(
-            f"Пропущено (нет описания, будут обработаны после догрузки): "
-            f"{skipped_no_description}"
+            f"Пропущено (нет описания, будут проверены после загрузки): {skipped_no_description}"
         )
     if skipped_area:
-        print(f"Пропущено (не подходит город/формат работы): " f"{skipped_area}")
+        print(f"Пропущено (не подходит город или формат работы): {skipped_area}")
     print(f"Уже откликались (пропуск): {skipped_applied}")
-    print(f"Прошли предварительный фильтр: {len(filtered)}")
-    print(f"Порог соответствия: {threshold}")
+    print(f"Прошли быструю проверку: {len(filtered)}")
+    print(f"Минимальный балл для отбора: {threshold}")
     log.info(
-        f"Матчинг: query={qid}, checked={len(checked_ids)}, "
-        f"skipped_no_description={skipped_no_description}, "
-        f"skipped_area={skipped_area}, "
-        f"filtered={len(filtered)}, skipped_applied={skipped_applied}, "
-        f"query_hash={current_hash}, is_current={is_current}"
+        f"Матчинг: query={qid}, checked={len(checked_ids)}, skipped_no_description={skipped_no_description}, "
+        f"skipped_area={skipped_area}, filtered={len(filtered)}, skipped_applied={skipped_applied}, "
+        f"query_hash={current_hash}, is_current={is_current}, stopped={stopped}"
     )
 
     if not filtered:
-        print("Нет вакансий для оценки после предварительного фильтра.")
+        print("Нет вакансий для оценки после быстрой проверки.")
         if checked_ids:
             _finalize(
                 state,
@@ -414,10 +487,17 @@ def match_resume(resume_id, config_index, query_id=None):
                 existing_all,
                 existing_passed,
             )
-            print_info("Состояние сохранено, при следующем запуске пересчета не будет.")
+            if stopped:
+                print_warning(
+                    f"Оценка остановлена по '0'. Проверено {len(checked_ids)} вакансий."
+                )
+            else:
+                print_info(
+                    "Результат сохранен. При следующем запуске этот запрос пересчитываться не будет."
+                )
         return
 
-    print("\nОценка соответствия...")
+    print("\nСчитаем оценки соответствия...")
     candidates = []
     skipped_no_title = 0
     skipped_no_kw = 0
@@ -435,8 +515,7 @@ def match_resume(resume_id, config_index, query_id=None):
     print_info(f"Отсеяно (нет ключевых слов в описании): {skipped_no_kw}")
     print_info(f"Кандидатов на оценку: {len(candidates)}")
     log.info(
-        f"Матчинг: skipped_no_title={skipped_no_title}, "
-        f"skipped_no_kw={skipped_no_kw}, candidates={len(candidates)}"
+        f"Матчинг: skipped_no_title={skipped_no_title}, skipped_no_kw={skipped_no_kw}, candidates={len(candidates)}"
     )
 
     if not candidates:
@@ -452,7 +531,9 @@ def match_resume(resume_id, config_index, query_id=None):
             existing_all,
             existing_passed,
         )
-        print_info("Состояние сохранено, при следующем запуске пересчета не будет.")
+        print_info(
+            "Результат сохранен. При следующем запуске этот запрос пересчитываться не будет."
+        )
         return
 
     results = []
@@ -481,12 +562,10 @@ def match_resume(resume_id, config_index, query_id=None):
     passed_ids = {r["id"] for r in passed_unique}
 
     print_info(
-        f"\nПрошли порог: {len(passed_raw)}, "
-        f"после удаления дублей: {len(passed_unique)}"
+        f"\nПрошли минимальный балл: {len(passed_raw)}, после удаления повторов: {len(passed_unique)}"
     )
     log.info(
-        f"Matcher: threshold={threshold}, passed_raw={len(passed_raw)}, "
-        f"passed_unique={len(passed_unique)}"
+        f"Matcher: threshold={threshold}, passed_raw={len(passed_raw)}, passed_unique={len(passed_unique)}"
     )
 
     for r in results:
@@ -507,21 +586,23 @@ def match_resume(resume_id, config_index, query_id=None):
         existing_passed,
     )
 
-    print(f"\n{'=' * 70}")
-    print(f"Проверено сейчас: {len(checked_ids)}")
-    print(f"Уже откликались (пропуск): {skipped_applied}")
-    print(f"Отсеяно (нет слов из названия в заголовке): {skipped_no_title}")
-    print(f"Отсеяно (нет ключевых слов в описании): {skipped_no_kw}")
-    print(f"Всего проверено: {len(results)}")
-    print(f"Прошли порог: {len(passed_raw)}")
-    print(f"После удаления дублей: {len(passed_unique)}")
-    print(f"{'=' * 70}\n")
+    if stopped:
+        print_warning("\nОценка остановлена по '0'. Проверенные вакансии сохранены.")
+    else:
+        print(f"\n{'=' * 70}")
+        print(f"Проверено сейчас: {len(checked_ids)}")
+        print(f"Уже откликались (пропуск): {skipped_applied}")
+        print(f"Отсеяно (нет слов из названия в заголовке): {skipped_no_title}")
+        print(f"Отсеяно (нет ключевых слов в описании): {skipped_no_kw}")
+        print(f"Всего проверено: {len(results)}")
+        print(f"Прошли минимальный балл: {len(passed_raw)}")
+        print(f"После удаления повторов: {len(passed_unique)}")
+        print(f"{'=' * 70}\n")
+
     log.info(
-        f"Матчинг завершен: checked={len(checked_ids)}, "
-        f"skipped_applied={skipped_applied}, "
-        f"skipped_no_title={skipped_no_title}, "
-        f"skipped_no_kw={skipped_no_kw}, "
-        f"passed_raw={len(passed_raw)}, passed_unique={len(passed_unique)}"
+        f"Матчинг завершен: checked={len(checked_ids)}, skipped_applied={skipped_applied}, "
+        f"skipped_no_title={skipped_no_title}, skipped_no_kw={skipped_no_kw}, "
+        f"passed_raw={len(passed_raw)}, passed_unique={len(passed_unique)}, stopped={stopped}"
     )
 
 

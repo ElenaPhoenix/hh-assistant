@@ -28,6 +28,7 @@ from utils import (
     load_config,
     load_resume,
     load_matches,
+    load_vacancies,
     resume_id_from_url,
     query_key,
     remove_vacancies_from_cache,
@@ -42,6 +43,7 @@ from ui_helper import (
     ask_choice,
     ask_int,
     pause,
+    plural,
     print_success,
     print_error,
     print_warning,
@@ -55,14 +57,13 @@ MENU = """
 ╠══════════════════════════════════════════════════════════════════╣
 ║  1. Настроить поиск вакансий (редактировать запросы)             ║
 ║  2. Собрать новые вакансии с hh.ru                               ║
-║  3. Обработать резюме (загрузка резюме и оценка вакансий)        ║
+║  3. Оценить вакансии (загрузить резюме и оценить)                ║
 ║  4. Отправить отклики на подходящие вакансии                     ║
 ║  5. Пройти тесты (вакансии с обязательным тестом)                ║
-║  6. Синхронизировать с hh (история откликов и база данных)       ║
+║  6. Синхронизация с hh.ru (отклики и переписка)                  ║
 ║  7. Статистика (прогресс по текущему запросу)                    ║
-║  8. Сбросить прогресс и очистить базу вакансий                   ║
+║  8. Управление базой (сброс и очистка)                           ║
 ║  9. Сменить активный запрос                                      ║
-║ 10. Проверить ответы работодателей                               ║
 ║  0. Выход                                                        ║
 ╚══════════════════════════════════════════════════════════════════╝
 """
@@ -73,6 +74,12 @@ PHASE_RU = {
     "matched": "вакансии оценены",
     "applying": "отправка откликов",
     "applied": "отклики отправлены",
+}
+
+_API_STATUS_RU = {
+    "captcha": "требуется проверка на робота",
+    "error": "ошибка на стороне hh.ru",
+    "timeout": "hh.ru не ответил вовремя",
 }
 
 
@@ -154,10 +161,7 @@ def copy_to_clipboard(text):
 def _remove_dead_vacancy(state, resume_id, vid, reason):
     mark_denied(state, resume_id, vid)
     removed = remove_vacancies_from_cache([vid])
-    log.info(
-        f"Тест: вакансия {vid} удалена ({reason}); "
-        f"из кэша vacancies_detailed.json: {removed}"
-    )
+    log.info(f"Тест: вакансия {vid} удалена ({reason}); из кэша: {removed}")
 
 
 def _fetch_vacancy_for_test(vid, state, resume_id):
@@ -172,7 +176,7 @@ def _fetch_vacancy_for_test(vid, state, resume_id):
 
         if status == "ok" and isinstance(data, dict):
             if data.get("archived") or data.get("closed_for_applicants"):
-                print_warning("Вакансия в архиве или закрыта. Убираю из баз.")
+                print_warning("Вакансия в архиве или закрыта. Убираю из базы.")
                 _remove_dead_vacancy(state, resume_id, vid, "archived_or_closed")
                 return "deleted", None
             return "ok", data
@@ -180,7 +184,7 @@ def _fetch_vacancy_for_test(vid, state, resume_id):
         err_raw = str(data or "")
         err_low = err_raw.lower()
         log.warning(
-            f"Тест: GET /vacancies/{vid} -> status={status}, " f"data={err_raw[:500]}"
+            f"Тест: GET /vacancies/{vid} -> status={status}, data={err_raw[:500]}"
         )
 
         is_dead = (
@@ -194,33 +198,26 @@ def _fetch_vacancy_for_test(vid, state, resume_id):
             or "does not exist" in err_low
         )
         if status == "error" and is_dead:
-            print_warning("Вакансия недоступна на hh. Убираю из баз.")
+            print_warning("Вакансия недоступна на hh. Убираю из базы.")
             _remove_dead_vacancy(state, resume_id, vid, "not_found")
             return "deleted", None
 
-        print_error(f"Не удалось загрузить вакансию ({status}).")
+        reason = _API_STATUS_RU.get(status, "неизвестная ошибка")
+        print_error(f"Не удалось загрузить вакансию: {reason}.")
         choice = ask_choice(
             "Что делать?",
-            [
-                (
-                    "retry",
-                    "Повторить загрузку",
-                    "Запросить вакансию с hh еще раз",
-                ),
-            ],
+            [("retry", "Повторить загрузку", "Запросить вакансию с hh еще раз")],
             allow_cancel=True,
-            cancel_label="Выйти из пункта 5",
+            cancel_label="Выйти из обработки",
         )
         if choice is None:
             return "exit", None
 
 
 def _parse_test_numbers(raw_input, max_val):
-    """Парсит строку '1, 3, 5' в список индексов. Возвращает (valid, invalid)."""
-    valid = []
-    invalid = []
-    for part in raw_input.split(","):
-        part = part.strip()
+    parts = re.split(r"[,;\s]+", raw_input.strip())
+    valid, invalid = [], []
+    for part in parts:
         if not part:
             continue
         try:
@@ -247,7 +244,7 @@ def menu_collect_vacancies():
 
 
 def menu_process_resume():
-    print_info("\n=== Обработка резюме ===")
+    print_info("\n=== Оценка вакансий ===")
     state, config = load_state(), load_config()
     r_idx, resume_id, query = get_current_context(state, config)
     if r_idx is None:
@@ -285,6 +282,126 @@ def menu_send_applications():
     pause()
 
 
+def _show_test_vacancies(vacancies):
+    for i, v in enumerate(vacancies, 1):
+        employer = v.get("employer") or "Не указан"
+        print(f"  {i}. {v['name']}")
+        print(f"     {employer} | {v['match_score']}%")
+        if v.get("link"):
+            print(f"     {v['link']}")
+        print()
+
+
+def _process_single_test(
+    state,
+    resume_id,
+    vacancy,
+    resume_data,
+    candidate_name,
+    portfolio_url=None,
+):
+    vid = vacancy["id"]
+
+    print()
+    print(f"Вакансия: {vacancy['name']}")
+    print(f"Работодатель: {vacancy.get('employer', 'Не указан')}")
+    print(f"Соответствие: {vacancy['match_score']}%")
+    print()
+
+    print("Загружаю описание вакансии...")
+    fetch_status, full_vacancy = _fetch_vacancy_for_test(vid, state, resume_id)
+    if fetch_status == "exit":
+        return "exit"
+    if fetch_status == "deleted":
+        print_info("Вакансия убрана из списка.")
+        return "failed"
+
+    print("Создаю письмо...")
+    try:
+        token_mgr = TokenManager()
+    except Exception as e:
+        print_error("Не удалось подключиться к GigaChat. Подробности в data/app.log.")
+        log.error(f"GigaChat error: {e}")
+        print_info("Вакансия останется в списке. Попробуйте позже.")
+        return "failed"
+
+    vacancy_for_generation = {
+        "name": full_vacancy.get("name", vacancy["name"]),
+        "employer": (full_vacancy.get("employer") or {}).get(
+            "name", vacancy.get("employer")
+        ),
+        "full_description": full_vacancy.get("description", ""),
+        "key_skills": ", ".join(
+            s.get("name", "") for s in full_vacancy.get("key_skills", [])
+        ),
+    }
+
+    letter = None
+    for attempt in range(2):
+        letter = generate_letter(
+            token_mgr,
+            resume_data.get("full_text", ""),
+            vacancy_for_generation,
+            vacancy["match_score"],
+            candidate_name,
+            gender=resume_data.get("gender"),
+            key_skills=resume_data.get("key_skills"),
+            portfolio_url=portfolio_url,
+        )
+        if letter:
+            break
+        if attempt == 0:
+            print_warning("С первого раза письмо не получилось.")
+            if not ask_yes_no("Попробовать еще раз?", allow_cancel=True):
+                break
+
+    if not letter:
+        print_error("Не удалось создать письмо.")
+        print_info("Вакансия останется в списке. Попробуйте позже.")
+        return "failed"
+
+    if copy_to_clipboard(letter):
+        print_success("Письмо скопировано в буфер обмена.")
+    else:
+        print_warning(
+            "Не удалось скопировать в буфер. Скопируйте вручную из текста ниже."
+        )
+
+    print()
+    print("=" * 60)
+    print("Текст письма:")
+    print("=" * 60)
+    print(letter)
+    print("=" * 60)
+    print()
+
+    if vacancy.get("link"):
+        print(f"Открываю страницу вакансии: {vacancy['link']}")
+        webbrowser.open(vacancy["link"])
+
+    print()
+    print_info(
+        "1. Пройди тест на сайте hh.ru\n"
+        "2. Вставь письмо в поле сопроводительного (Ctrl+V)\n"
+        "3. Отправь отклик"
+    )
+    print()
+
+    answer = ask_yes_no("Отклик отправлен?", allow_cancel=True)
+    if answer is None:
+        print_info("Вакансия останется в списке. Выход из обработки.")
+        return "exit"
+    if answer:
+        add_applied_id(state, resume_id, vid)
+        remove_needs_test(state, resume_id, vid)
+        save_state(state)
+        print_success("Вакансия отмечена как откликнутая.")
+        log.info(f"Тест пройден, отклик отправлен: {vid}")
+        return "sent"
+    print_info("Вакансия останется в списке для следующего раза.")
+    return "skipped"
+
+
 def menu_pass_tests():
     print_info("\n=== Прохождение тестов ===")
     while True:
@@ -301,11 +418,12 @@ def menu_pass_tests():
         candidate_name = (resume_data.get("candidate_name") or "").strip()
         if not candidate_name:
             print_error(
-                "В резюме нет имени кандидата. Запустите пункт 3 для "
-                "перезагрузки резюме."
+                "В резюме нет имени кандидата. " "Запустите пункт 3 для перезагрузки."
             )
             pause()
             return
+
+        portfolio_url = (config.get("portfolio_url") or "").strip() or None
 
         qid = query_key(query)
         needs_test = get_needs_test(state, resume_id)
@@ -323,157 +441,168 @@ def menu_pass_tests():
             for t in needs_test
             if _needs_test_query_key(t) == qid and t.get("id") not in denied
         ]
+        other_query_count = sum(
+            1
+            for t in needs_test
+            if _needs_test_query_key(t) != qid and t.get("id") not in denied
+        )
 
         if not current_query_tests:
-            print(f"Нет вакансий с тестом по запросу '{query['name']}'.")
-            pause()
-            return
-
-        print(
-            f"\nВакансии с тестом по запросу '{query['name']}' "
-            f"({len(current_query_tests)}):\n"
-        )
-        for i, v in enumerate(current_query_tests, 1):
-            print(
-                f"  {i}. {v['name'][:60]}\n"
-                f"     {v.get('employer', 'N/A')} | {v['match_score']}%\n"
-                f"     {v.get('link', '')}\n"
-            )
-
-        if len(current_query_tests) == 1:
-            vacancy = current_query_tests[0]
-            if not ask_yes_no("Обработать эту вакансию?"):
-                return
-        else:
-            print_info("Введи номер вакансии для прохождения.")
-            print_info(
-                "Или номера через запятую (например: 1, 3, 5), чтобы пропустить их."
-            )
-            print_info("(0 - выход)")
-            raw_choice = input("Твой выбор: ").strip()
-
-            if raw_choice == "0":
-                return
-
-            if "," in raw_choice:
-                valid_nums, invalid_nums = _parse_test_numbers(
-                    raw_choice, len(current_query_tests)
-                )
-
-                if invalid_nums:
-                    print_warning(
-                        f"Пропущены некорректные номера: {', '.join(invalid_nums)}"
-                    )
-
-                if not valid_nums:
-                    print_error("Нет валидных номеров для обработки.")
-                    pause()
-                    continue
-
+            print(f"\nПо запросу '{query['name']}' нет вакансий с тестом.")
+            if other_query_count:
                 print_info(
-                    f"Помечаем как прочитанные/неподходящие: {len(valid_nums)} шт."
+                    f"По другим запросам: {other_query_count} "
+                    f"{plural(other_query_count, 'вакансия', 'вакансии', 'вакансий')}. "
+                    f"Смените активный запрос в пункте 9."
                 )
-                for n in valid_nums:
-                    v_to_skip = current_query_tests[n - 1]
-                    vid = v_to_skip["id"]
-                    mark_denied(state, resume_id, vid)
-                    log.info(f"Тест пропущен вручную: {vid}")
-                save_state(state)
-                print_success("Выбранные вакансии удалены из списка тестов.")
-                pause()
-                continue
-
-            try:
-                num = int(raw_choice)
-                if not (1 <= num <= len(current_query_tests)):
-                    print_error(f"Введи число от 1 до {len(current_query_tests)}.")
-                    pause()
-                    continue
-                vacancy = current_query_tests[num - 1]
-            except ValueError:
-                print_error("Введи число или номера через запятую.")
-                pause()
-                continue
-
-        vid = vacancy["id"]
-        fetch_status, full_vacancy = _fetch_vacancy_for_test(vid, state, resume_id)
-        if fetch_status == "exit":
+            pause()
             return
-        if fetch_status == "deleted":
-            continue
 
-        print("\nГенерируем письмо...")
-        try:
-            token_mgr = TokenManager()
-        except Exception as e:
-            print_error(f"Ошибка GigaChat: {e}")
-            log.error(f"GigaChat error: {e}")
+        print()
+        print(f"Запрос: {query['name']}")
+        print(f"Вакансий с тестом: {len(current_query_tests)}")
+        if other_query_count:
+            print(f"По другим запросам: {other_query_count}")
+        print()
+        _show_test_vacancies(current_query_tests)
+
+        choice = ask_choice(
+            "Выбери действие:",
+            [
+                (
+                    "do",
+                    "Пройти тест",
+                    "Открыть вакансию, пройти тест на сайте hh.ru\n"
+                    "и отправить отклик с письмом.",
+                ),
+                (
+                    "deny",
+                    "Отметить как отказ",
+                    "Пометить вакансии как неинтересные.\n"
+                    "Они больше не будут показываться в этом списке.",
+                ),
+            ],
+            allow_cancel=True,
+            cancel_label="Выход в главное меню",
+        )
+
+        if choice is None:
+            return
+
+        if choice == "deny":
+            raw = input(
+                "Номера вакансий через запятую (например: 1, 3, 5; " "0 - отмена): "
+            ).strip()
+            if raw == "0":
+                pause()
+                continue
+            valid, invalid = _parse_test_numbers(raw, len(current_query_tests))
+            if invalid:
+                print_warning(f"Пропущены некорректные номера: {', '.join(invalid)}")
+            if not valid:
+                print_error("Ни одного корректного номера не указано.")
+                pause()
+                continue
+            print_info(f"Помечаю как отказ: {len(valid)}.")
+            for n in valid:
+                vid = current_query_tests[n - 1]["id"]
+                mark_denied(state, resume_id, vid)
+                log.info(f"Тест: помечен как отказ: {vid}")
+            save_state(state)
+            print_success("Готово.")
             pause()
             continue
 
-        vacancy_for_generation = {
-            "name": full_vacancy.get("name", vacancy["name"]),
-            "employer": (full_vacancy.get("employer") or {}).get(
-                "name", vacancy.get("employer")
-            ),
-            "full_description": full_vacancy.get("description", ""),
-            "key_skills": ", ".join(
-                [s.get("name", "") for s in full_vacancy.get("key_skills", [])]
-            ),
-        }
+        while True:
+            state, config = load_state(), load_config()
+            r_idx, resume_id, query = get_current_context(state, config)
+            if r_idx is None:
+                return
+            qid = query_key(query)
+            portfolio_url = (config.get("portfolio_url") or "").strip() or None
 
-        letter, key_phrase = generate_letter(
-            token_mgr,
-            resume_data.get("full_text", ""),
-            vacancy_for_generation,
-            vacancy["match_score"],
-            candidate_name,
-        )
-        if not letter:
-            print_error(
-                "Не удалось сгенерировать письмо. Проверьте GigaChat или "
-                "data/fixed_letter.txt."
+            needs_test = get_needs_test(state, resume_id)
+            denied = get_denied_ids(state, resume_id)
+            current_query_tests = [
+                t
+                for t in needs_test
+                if _needs_test_query_key(t) == qid and t.get("id") not in denied
+            ]
+
+            if not current_query_tests:
+                print_info("Все вакансии с тестом по этому запросу обработаны.")
+                pause()
+                return
+
+            print()
+            print(f"Запрос: {query['name']}")
+            print(f"Вакансий с тестом: {len(current_query_tests)}")
+            print()
+            _show_test_vacancies(current_query_tests)
+
+            num = ask_int(
+                f"Номер вакансии (1-{len(current_query_tests)}, 0 - отмена): ",
+                allow_cancel=True,
+                min_value=1,
+                max_value=len(current_query_tests),
+            )
+            if num is None:
+                break
+
+            vacancy = current_query_tests[num - 1]
+            result = _process_single_test(
+                state,
+                resume_id,
+                vacancy,
+                resume_data,
+                candidate_name,
+                portfolio_url=portfolio_url,
             )
             pause()
+            if result == "exit":
+                break
+
+
+def menu_sync():
+    print_info("\n=== Синхронизация с hh.ru ===")
+    while True:
+        choice = ask_choice(
+            "Выбери действие:",
+            [
+                (
+                    "negotiations",
+                    "Синхронизировать отклики",
+                    "Скачать историю откликов, обновить прогресс\n" "и базу данных.",
+                ),
+                (
+                    "messages_new",
+                    "Проверить ответы работодателей",
+                    "Загрузить чаты, где hh отметил обновление.\n"
+                    "Может пропустить ответы, если hh не обновил метку.",
+                ),
+            ],
+            allow_cancel=True,
+            cancel_label="Назад в главное меню",
+        )
+
+        if choice is None:
+            return
+
+        if choice == "negotiations":
+            print("Скачиваем историю откликов и обновляем базу данных...")
+            run_script("sync_negotiations.py")
+            pause()
             continue
 
-        if copy_to_clipboard(letter):
-            print_success("Письмо скопировано в буфер обмена.")
-        else:
-            print_warning("Не удалось скопировать - скопируй вручную.")
-
-        print(
-            "\n"
-            + "=" * 60
-            + "\nТЕКСТ ПИСЬМА:\n"
-            + "=" * 60
-            + f"\n{letter}\n"
-            + "=" * 60
-        )
-        print(f"\nОткрываю {vacancy.get('link', '')}...")
-        if vacancy.get("link"):
-            webbrowser.open(vacancy["link"])
-        print(
-            "\n" + "=" * 60 + "\n1. Нажми 'Откликнуться'.\n2. Ответь на вопросы.\n"
-            "3. Добавь письмо.\n4. Ctrl+V.\n5. Отправь.\n" + "=" * 60
-        )
-
-        if ask_yes_no("\nОтклик отправлен?"):
-            add_applied_id(state, resume_id, vid)
-            remove_needs_test(state, resume_id, vid)
-            save_state(state)
-            print_success("Вакансия отмечена как откликнутая.")
-            log.info(f"Тест пройден, отклик отправлен: {vid}")
-        else:
-            print("Оставляю в очереди.")
+        print("Выгружаем новые сообщения из чатов hh...")
+        if not run_script("check_messages.py"):
+            print_error("Ошибка выгрузки. Смотрите data/app.log.")
             pause()
+            continue
 
-
-def menu_sync_negotiations():
-    print_info("\n=== Синхронизация с hh ===")
-    print("Скачиваем историю откликов и обновляем базу данных...")
-    run_script("sync_negotiations.py")
-    pause()
+        print("\nПоказываем последние ответы...")
+        run_script("show_replies.py")
+        pause()
 
 
 def menu_statistics():
@@ -495,8 +624,7 @@ def menu_statistics():
     )
     print(f"Текущий запрос: {query['name']}")
     phase_raw = state["resumes"].get(resume_id, {}).get("phase", "not_started")
-    phase_ru = PHASE_RU.get(phase_raw, phase_raw)
-    print(f"Состояние: {phase_ru}\n")
+    print(f"Состояние: {PHASE_RU.get(phase_raw, phase_raw)}\n")
 
     if matches:
         passed_raw = [
@@ -537,34 +665,42 @@ def menu_reset_progress():
         return
 
     qid = query_key(query)
-    print(f"\nТекущий запрос: {query['name']}")
+    resume_data = load_resume(resume_id)
+    title = (resume_data.get("title") or "Резюме") if resume_data else "Резюме"
+    print(f"Резюме: {title}")
+    print(f"Текущий запрос: {query['name']}")
+    print()
+
     choice = ask_choice(
         "Что сбросить?",
         [
             (
                 "processed",
-                "Обработанные вакансии ТЕКУЩЕГО запроса",
-                "Сбросит список проверенных для текущего запроса",
+                "Проверенные вакансии (только текущий запрос)",
+                "При следующей оценке все вакансии этого запроса\n"
+                "будут проверены заново. Отклики, отказы и тесты\n"
+                "не тронутся.",
             ),
             (
                 "applied",
-                "Отправленные отклики (ВСЁ резюме)",
-                "Сбросит историю откликов для ВСЕГО резюме",
+                "Отклики (для всего резюме)",
+                "Список откликнутых вакансий по всем запросам\n" "станет пустым.",
             ),
             (
                 "denied",
-                "Отказы (ВСЁ резюме)",
-                "Сбросит историю отказов для ВСЕГО резюме",
+                "Отказы (для всего резюме)",
+                "Список отклоненных вакансий станет пустым.",
             ),
             (
                 "needs_test",
-                "Ожидающие теста (ВСЁ резюме)",
-                "Сбросит список вакансий с тестами",
+                "Вакансии с тестом (для всего резюме)",
+                "Список вакансий, ожидающих прохождения теста,\n" "станет пустым.",
             ),
             (
                 "all",
-                "Всё сразу для резюме",
-                "Полный сброс прогресса по ВСЕМ запросам этого резюме",
+                "Всё сразу (для всего резюме)",
+                "Прогресс, отклики, отказы и тесты будут забыты.\n"
+                "Резюме нужно будет оценить заново.",
             ),
         ],
         allow_cancel=True,
@@ -573,7 +709,7 @@ def menu_reset_progress():
         return
 
     label_map = {
-        "processed": "обработанные вакансии текущего запроса",
+        "processed": "проверенные вакансии текущего запроса",
         "applied": "все отклики резюме",
         "denied": "все отказы резюме",
         "needs_test": "все ожидающие теста",
@@ -595,6 +731,9 @@ def menu_reset_progress():
         reset_needs_test(state, resume_id)
     elif choice == "all":
         reset_all(state, resume_id)
+        resume_queries = config["resumes"][r_idx].get("queries", [])
+        for q in resume_queries:
+            clear_query_hash(resume_id, query_key(q))
     save_state(state)
     print_success("Прогресс сброшен.")
     log.info(f"Сброс (resume={resume_id}, query={qid}, choice={choice})")
@@ -602,16 +741,15 @@ def menu_reset_progress():
 
 
 def menu_manage_base():
-    print_info("\n=== Сброс прогресса и очистка базы ===")
+    print_info("\n=== Управление базой ===")
+    state, config = load_state(), load_config()
+    r_idx, _, query = get_current_context(state, config)
 
-    vacancies_file = os.path.join(DATA_DIR, "vacancies_detailed.json")
-    cnt = 0
-    try:
-        with open(vacancies_file, "r", encoding="utf-8") as f:
-            cnt = len(json.load(f))
-    except Exception:
-        cnt = 0
-    print(f"Текущий размер локальной базы: {cnt} вакансий")
+    cnt = len(load_vacancies())
+    print(f"Собрано вакансий: {cnt}")
+    if query:
+        print(f"Текущий запрос: {query['name']}")
+    print()
 
     choice = ask_choice(
         "Выбери действие:",
@@ -619,13 +757,14 @@ def menu_manage_base():
             (
                 "progress",
                 "Сбросить прогресс",
-                "Сбросить историю обработанных вакансий, откликов, "
-                "отказов и тестов для резюме",
+                "Забыть историю проверки, отклики, отказы и тесты\n"
+                "для резюме. При следующей оценке (пункт 3) вакансии\n"
+                "будут проверены заново.",
             ),
             (
                 "cleanup",
-                "Очистка базы вакансий",
-                "Полная очистка / удалить за период",
+                "Очистить базу вакансий",
+                "Удалить собранные вакансии. История откликов и тестов\n" "сохранится.",
             ),
         ],
         allow_cancel=True,
@@ -654,13 +793,7 @@ def menu_change_query():
         )
         for query in resume.get("queries", []):
             qid = query_key(query)
-            options.append(
-                (
-                    f"{r_idx}:{qid}",
-                    f"[{resume_title}] {query['name']}",
-                    "",
-                )
-            )
+            options.append((f"{r_idx}:{qid}", f"[{resume_title}] {query['name']}", ""))
 
     if not options:
         print_error("Нет доступных запросов.")
@@ -674,7 +807,7 @@ def menu_change_query():
         if oqid == current_qid:
             current_label = label
             break
-    print(f"\nТекущий запрос: {current_label}")
+    print(f"\nСейчас активен: {current_label}")
     choice = ask_choice("Выбери новый активный запрос:", options, allow_cancel=True)
     if choice is None:
         return
@@ -689,21 +822,9 @@ def menu_change_query():
     pause()
 
 
-def menu_check_messages():
-    print_info("\n=== Ответы работодателей ===")
-    print("Выгружаем новые сообщения из чатов hh...")
-    if not run_script("check_messages.py"):
-        print_error("Ошибка выгрузки. Смотрите data/app.log.")
-        pause()
-        return
-    print("\nПоказываем последние ответы...")
-    run_script("show_replies.py")
-    pause()
-
-
 def main():
     if not os.path.exists(CONFIG_FILE):
-        print_warning("Конфиг не найден. Сначала настройте поиск (пункт 1).")
+        print_warning("Настройки не найдены. Сначала настройте поиск (пункт 1).")
         pause()
 
     _log_tool_version()
@@ -718,6 +839,7 @@ def main():
         clear_screen()
         print(MENU)
         choice = input("Твой выбор: ").strip()
+
         if choice == "1":
             menu_configure()
         elif choice == "2":
@@ -729,21 +851,19 @@ def main():
         elif choice == "5":
             menu_pass_tests()
         elif choice == "6":
-            menu_sync_negotiations()
+            menu_sync()
         elif choice == "7":
             menu_statistics()
         elif choice == "8":
             menu_manage_base()
         elif choice == "9":
             menu_change_query()
-        elif choice == "10":
-            menu_check_messages()
         elif choice == "0":
             log.info("=== HH ASSISTANT завершен ===")
             print("До встречи!")
             break
         else:
-            print_error("Неверный выбор. Введи число от 0 до 10.")
+            print_error("Неверный выбор. Введи число от 0 до 9.")
 
 
 if __name__ == "__main__":

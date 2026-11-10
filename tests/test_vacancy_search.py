@@ -5,7 +5,6 @@ from utils import save_vacancies, load_vacancies
 
 @patch("vacancy_search.call_api", return_value=("timeout", "timeout"))
 def test_load_missing_details_stops_after_limit_failures(mock_api, temp_env):
-    # Создаем столько вакансий, сколько нужно для срабатывания лимита
     num_vacancies = MAX_DETAILS_CONSECUTIVE_FAILURES + 1
     save_vacancies({i: {"id": i} for i in range(1, num_vacancies + 1)})
 
@@ -30,3 +29,35 @@ def test_load_missing_details_success(mock_api, temp_env):
     assert interrupted is False
     assert merged[1]["full_description"] == "new desc"
     assert merged[2]["full_description"] == "new desc"
+
+
+@patch("vacancy_search.call_api")
+def test_load_missing_details_removes_archived(mock_api, temp_env):
+    """Вакансия в архиве - удаляется из merged, без прерывания."""
+    mock_api.return_value = ("ok", {"archived": True, "description": ""})
+    save_vacancies({1: {"id": 1}, 2: {"id": 2}})
+
+    merged = {1: {"id": 1}, 2: {"id": 2}}
+
+    interrupted = _load_missing_details(merged, [1, 2])
+
+    assert interrupted is False
+    assert 1 not in merged
+    assert 2 not in merged
+
+
+@patch("vacancy_search.call_api")
+def test_load_missing_details_removes_closed(mock_api, temp_env):
+    """Вакансия закрыта - тоже удаляется."""
+    mock_api.return_value = (
+        "ok",
+        {"closed_for_applicants": True, "description": ""},
+    )
+    save_vacancies({1: {"id": 1}})
+
+    merged = {1: {"id": 1}}
+
+    interrupted = _load_missing_details(merged, [1])
+
+    assert interrupted is False
+    assert 1 not in merged

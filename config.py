@@ -27,6 +27,7 @@ PERIOD_RU = {
     1: "Сегодня",
     3: "За 3 дня",
     7: "За неделю",
+    14: "За 2 недели",
     30: "За месяц",
 }
 
@@ -225,7 +226,7 @@ def _ask_exclude_words(existing_query):
         current = list(existing_query["exclude_words"])
     return _edit_selection(
         current,
-        "Слова-исключения (если в тексте - вакансия отсеивается)",
+        "Слова-исключения (если в названии - вакансия отсеивается)",
         allow_empty=True,
     )
 
@@ -280,6 +281,7 @@ def _ask_periods(existing_query):
         (1, "Сегодня"),
         (3, "За 3 дня"),
         (7, "За неделю"),
+        (14, "За 2 недели"),
         (30, "За месяц"),
         (0, "Все время"),
     ]
@@ -302,34 +304,63 @@ def _ask_roles(target_title, existing_query):
 
 
 def _ask_salary(existing_query):
-    current_min = 0
-    if existing_query and "min_salary" in existing_query:
-        current_min = existing_query.get("min_salary", 0)
+    """Возвращает (min_salary, only_with_salary) или None при отмене запроса."""
+    has_current = existing_query is not None and "min_salary" in existing_query
+    current_min = existing_query.get("min_salary", 0) if existing_query else 0
 
     print()
     print("НАСТРОЙКА ФИЛЬТРА ПО ЗАРПЛАТЕ:")
-    cur_label = "не задана" if current_min <= 0 else str(current_min)
-    print(f"  Текущий минимум: {cur_label}")
+    if has_current:
+        if current_min <= 0:
+            cur_label = "не задан (без фильтра)"
+        else:
+            cur_label = f"от {current_min} и выше"
+        print(f"  Текущий фильтр: {cur_label}")
+        print()
+        action = ask_choice(
+            "Выбери действие:",
+            [
+                (
+                    "edit",
+                    "Изменить",
+                    "Задать новый фильтр по зарплате",
+                ),
+                (
+                    "keep",
+                    "Продолжить",
+                    "Оставить текущий фильтр без изменений",
+                ),
+            ],
+            allow_cancel=True,
+            cancel_label="Отменить редактирование запроса",
+        )
+        if action is None:
+            return None
+        if action == "keep":
+            return current_min, False
 
     mode = ask_choice(
-        "Выбери режим фильтра по зарплате:",
+        "Как фильтровать по зарплате?",
         [
             (
                 "none",
-                "Не фильтровать по зарплате",
-                "Попадут вакансии с любым размером зарплаты и без указания зарплаты",
+                "Без фильтра",
+                "Попадут вакансии с любым размером зарплаты\n"
+                "и без указания зарплаты",
             ),
             (
                 "amount",
                 "Указать минимальную зарплату",
-                "Попадут вакансии с зарплатой от указанной суммы и без указания зарплаты",
+                "Попадут вакансии с зарплатой от указанной суммы\n"
+                "и без указания зарплаты",
             ),
         ],
         allow_cancel=True,
+        cancel_label="Отменить редактирование запроса",
     )
     if mode is None:
-        if existing_query and "min_salary" in existing_query:
-            print_info("Отмена: оставляю текущие настройки зарплаты.")
+        if has_current:
+            print_info("Отмена: оставляю текущий фильтр.")
             return current_min, False
         return None
     if mode == "none":
@@ -342,14 +373,56 @@ def _ask_salary(existing_query):
         min_value=1,
     )
     if min_salary is None:
-        if existing_query and "min_salary" in existing_query:
-            print_info("Отмена: оставляю текущие настройки зарплаты.")
+        if has_current:
+            print_info("Отмена: оставляю текущий фильтр.")
             return current_min, False
         return None
 
     print_success(f"Минимальная зарплата: {min_salary}")
     print_info(f"Попадут вакансии без зарплаты И с зарплатой от {min_salary} и выше.")
     return min_salary, False
+
+
+def _ask_portfolio_url(current):
+    """Спрашивает URL портфолио через меню действий.
+
+    Возвращает:
+      - строку URL (новый/тот же)
+      - "" (портфолио сброшено)
+      - None (отмена, не менять)
+    """
+    if current:
+        action = ask_choice(
+            "Что сделать с портфолио?",
+            [
+                ("edit", "Изменить URL", f"Сейчас: {current}"),
+                ("clear", "Сбросить портфолио", "Убрать ссылку из писем"),
+            ],
+            allow_cancel=True,
+            cancel_label="Оставить как есть",
+        )
+        if action is None:
+            return None
+        if action == "clear":
+            if not ask_yes_no("Точно удалить портфолио из писем?"):
+                print_info("Отмена: портфолио оставлено.")
+                return None
+            return ""
+    else:
+        if not ask_yes_no("Задать URL портфолио?"):
+            return None
+
+    while True:
+        raw = input("URL портфолио (0 - отмена): ").strip()
+        if raw == "0":
+            return None
+        if not raw:
+            print_error("URL не может быть пустым.")
+            continue
+        if not (raw.startswith("http://") or raw.startswith("https://")):
+            print_error("URL должен начинаться с http:// или https://")
+            continue
+        return raw
 
 
 def _select_professional_roles(target_phrases, current=None):
@@ -364,7 +437,7 @@ def _select_professional_roles(target_phrases, current=None):
         for i, rid in enumerate(current, 1):
             print(f"  {i}. {role_map.get(rid, f'код {rid}')}")
         print()
-        if ask_yes_no("Оставить текущие роли?"):
+        if not ask_yes_no("Изменить текущие роли?"):
             return list(current)
 
     auto_ids = suggest_roles_by_keywords(target_phrases)
@@ -712,6 +785,21 @@ def _action_change_threshold(config):
     return True
 
 
+def _action_change_portfolio(config):
+    current = (config.get("portfolio_url") or "").strip()
+    new_url = _ask_portfolio_url(current)
+    if new_url is None:
+        return False
+    if new_url == current:
+        return False
+    config["portfolio_url"] = new_url
+    if new_url:
+        print_success(f"Портфолио: {new_url}")
+    else:
+        print_success("Портфолио сброшено (в письмах не будет ссылки).")
+    return True
+
+
 def _list_queries_for_display(config):
     idx = 1
     for r_idx, r in enumerate(config["resumes"]):
@@ -746,7 +834,9 @@ def main_menu():
         else:
             print("\n(нет сохраненных запросов)")
 
+        portfolio = (config.get("portfolio_url") or "").strip()
         print(f"\nПорог соответствия: {config.get('threshold', DEFAULT_THRESHOLD)}%")
+        print(f"Портфолио: {portfolio if portfolio else 'не задан'}")
         if dirty:
             print_warning("\n  * Есть несохраненные изменения")
 
@@ -775,6 +865,14 @@ def main_menu():
                 "threshold",
                 "Изменить порог соответствия",
                 "Вакансии с оценкой ниже порога не попадут в подходящие",
+            )
+        )
+        options.append(
+            (
+                "portfolio",
+                "Изменить портфолио",
+                "URL портфолио добавляется в сопроводительные письма\n"
+                "отдельной строкой перед подписью",
             )
         )
         options.append(
@@ -814,6 +912,9 @@ def main_menu():
                 dirty = True
         elif choice == "threshold":
             if _action_change_threshold(config):
+                dirty = True
+        elif choice == "portfolio":
+            if _action_change_portfolio(config):
                 dirty = True
 
 
