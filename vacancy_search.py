@@ -29,7 +29,7 @@ PERIOD_LABEL = {
     7: "7 дней",
     14: "14 дней",
     30: "30 дней",
-    0: "все время",
+    0: "всё время",
 }
 AREA_LABEL = {
     1: "Москва",
@@ -39,7 +39,7 @@ AREA_LABEL = {
     113: "Россия",
     1001: "Весь мир",
 }
-WORK_FORMAT_RU = {"REMOTE": "удаленно", "HYBRID": "гибрид", "ON_SITE": "офис"}
+WORK_FORMAT_RU = {"REMOTE": "удалённо", "HYBRID": "гибрид", "ON_SITE": "офис"}
 
 
 def _find_query(queries, query_id):
@@ -91,9 +91,6 @@ def search_page(
     page,
 ):
     # search_field=name: hh ищет по названию вакансии, не по описанию.
-    # Это отсекает вакансии, где target_title встречается только в тексте
-    # описания (matcher их все равно отсеивает), и освобождает лимит 2000
-    # для релевантных вакансий.
     params = [
         f"text={encode_url(text)}",
         f"area={area}",
@@ -160,9 +157,7 @@ def short_to_full(short):
 
 def _load_missing_details(merged, need_details):
     print(f"Требуется загрузить описание: {len(need_details)}")
-    print_info(
-        "  Обозначения: + загружено, x удалено с hh, - нет сети, ! ошибка, = уже откликались"
-    )
+    print_info("  Обозначения: + загружено, x удалено с hh, - сеть, ! ошибка")
     print_warning(
         "Остановить: нажми '0' (без Enter). Прогресс сохраняется при остановке и каждые 50 шт."
     )
@@ -173,7 +168,7 @@ def _load_missing_details(merged, need_details):
         if check_stop_key():
             save_vacancies(merged)
             print()
-            print_warning("Получена команда остановки ('0'). Прогресс сохранен.")
+            print_warning("Получена команда остановки ('0'). Прогресс сохранён.")
             print_info("При следующем запуске загрузка описаний продолжится.")
             log.info("vacancy_search: остановка догрузки по '0'")
             return True
@@ -183,8 +178,8 @@ def _load_missing_details(merged, need_details):
         )
 
         # Уже откликались, но нет в applied_vacancy_ids (например, откликнулись
-        # вручную, sync_negotiations еще не запускался). При следующем запуске
-        # фильтр в main() ее исключит. Работает и для dict (rc == 0, валидный
+        # вручную, sync_negotiations ещё не запускался). При следующем запуске
+        # фильтр в main() её исключит. Работает и для dict (rc == 0, валидный
         # парс), и для str (rc != 0, но JSON в stdout валиден - null в описании
         # ломает парсинг в hh-applicant-tool).
         if isinstance(data, dict) and "got_response" in (data.get("relations") or []):
@@ -199,7 +194,7 @@ def _load_missing_details(merged, need_details):
         # hh_api вернул "ok" без валидного JSON (пустой ответ или {"raw": ...}
         # после неудачного json.loads в hh_api). Описание НЕ получено - нельзя
         # записывать пустую строку, иначе вакансия застрянет с full_description=""
-        # и больше никогда не попадет в need_details.
+        # и больше никогда не попадёт в need_details.
         if st == "ok" and isinstance(data, dict) and ("raw" in data or not data):
             print("!")
             consecutive_failures = 0
@@ -260,7 +255,7 @@ def _load_missing_details(merged, need_details):
                     save_vacancies(merged)
                     print()
                     print_error(
-                        f"{consecutive_failures} раз подряд не удалось загрузить описание. Похоже, hh.ru недоступен. Останавливаюсь, прогресс сохранен."
+                        f"{consecutive_failures} раз подряд не удалось загрузить описание. Похоже, hh.ru недоступен. Останавливаюсь, прогресс сохранён."
                     )
                     log.error(
                         f"vacancy_search: остановка догрузки после {consecutive_failures} ошибок подряд"
@@ -282,6 +277,22 @@ def _load_missing_details(merged, need_details):
         print_info(
             f"Удалено из базы (архив, закрыта или удалена на hh): {len(stale_vids)}"
         )
+    return False
+
+
+def _is_excluded_employer(employer, excluded):
+    """True, если работодатель в списке исключений (совпадение 100%).
+
+    Сравнение: lower + strip с обеих сторон. Никакого fuzzy.
+    """
+    if not employer or not excluded:
+        return False
+    emp_norm = str(employer).strip().lower()
+    for ex in excluded:
+        if not ex:
+            continue
+        if str(ex).strip().lower() == emp_norm:
+            return True
     return False
 
 
@@ -320,6 +331,7 @@ def main():
     kw = target_title_raw.replace("|", " OR ")
     excl_words = query.get("exclude_words") or []
     core_kws = query.get("core_keywords") or []
+    excl_employers = config.get("exclude_employers") or []
     roles = query.get("professional_roles") or []
     formats = query.get("work_formats") or ["remote"]
     employments = query.get("employments") or ["full", "part", "project"]
@@ -327,7 +339,7 @@ def main():
     periods = query.get("periods") or [0]
     areas = _resolve_areas(formats, resume_data)
     stopped = False
-    stop_message = "Поиск остановлен. Прогресс сохранен."
+    stop_message = "Поиск остановлен. Прогресс сохранён."
     consecutive_failures = 0
     for area_id, area_label, hh_formats in areas:
         if stopped:
@@ -347,7 +359,7 @@ def main():
                 if check_stop_key():
                     print("\n  Остановка по команде '0'.")
                     stopped = True
-                    stop_message = "Поиск остановлен пользователем. Прогресс сохранен."
+                    stop_message = "Поиск остановлен пользователем. Прогресс сохранён."
                     break
                 data = search_page(
                     kw,
@@ -382,9 +394,19 @@ def main():
                     break
                 for s in items:
                     v = short_to_full(s)
+                    if _is_excluded_employer(v.get("employer"), excl_employers):
+                        continue
+                    # Предфильтр только по названию: snippet - короткая
+                    # выжимка из 2-3 предложений, в ней бывают случайные
+                    # упоминания слов-исключений ("опыт работы с 1С
+                    # приветствуется"), из-за которых подходящие вакансии
+                    # вылетали ещё до попадания в кэш. Core_keywords тоже
+                    # проверяются только по полному описанию в matcher.
+                    # Здесь передаём description="", чтобы filters.py
+                    # не смотрел ни exclude_words, ни core_keywords в snippet.
                     if check_vacancy_relevance(
                         v["name"],
-                        v.get("snippet", ""),
+                        "",
                         target_title_raw,
                         excl_words,
                         core_kws,
@@ -411,7 +433,7 @@ def main():
                         f"vacancy_search: остановка поиска после {consecutive_failures} ошибок подряд"
                     )
                     stopped = True
-                    stop_message = f"Поиск остановлен ({consecutive_failures} ошибок подряд). Прогресс сохранен."
+                    stop_message = f"Поиск остановлен ({consecutive_failures} ошибок подряд). Прогресс сохранён."
                     break
                 time.sleep(2)
     print(f"\nВсего уникальных подходящих вакансий: {len(all_new)}")
@@ -448,8 +470,7 @@ def main():
     # Вакансии, на которые уже откликались, не нуждаются в описании:
     # matcher их пропускает (skipped_applied), apply_via_api - тоже
     # (они в applied_vacancy_ids). Без фильтра каждая такая вакансия
-    # с full_description=None дергается каждый запуск, хотя ее
-    # описание не используется нигде.
+    # с full_description=None дёргается каждый запуск.
     applied = get_applied_ids(state, resume_id)
     need_details = [
         vid
@@ -468,7 +489,7 @@ def main():
     total = save_vacancies(merged)
     print(f"\nВсего вакансий в базе: {total}")
     log.info(
-        f"Сбор завершен: новых={truly_new}, updated_meta={updated_meta}, всего={total}, query={query_key(query)}"
+        f"Сбор завершён: новых={truly_new}, updated_meta={updated_meta}, всего={total}, query={query_key(query)}"
     )
 
 

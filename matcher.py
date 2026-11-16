@@ -49,6 +49,23 @@ KEYWORD_HIT_CAP = 60
 # Меняем при изменении логики скоринга. Включен в _query_hash:
 # после изменения matcher пересчитает все запросы заново.
 SCORER_VERSION = 3
+FILTER_VERSION = 2
+
+
+def _is_excluded_employer(employer, excluded):
+    """True, если работодатель в списке исключений (совпадение 100%).
+
+    Сравнение: lower + strip с обеих сторон. Никакого fuzzy.
+    """
+    if not employer or not excluded:
+        return False
+    emp_norm = str(employer).strip().lower()
+    for ex in excluded:
+        if not ex:
+            continue
+        if str(ex).strip().lower() == emp_norm:
+            return True
+    return False
 
 
 def _check_vacancy_area(vacancy, query, resume_data):
@@ -82,6 +99,7 @@ def _query_hash(query, threshold):
             "work_formats": sorted(query.get("work_formats") or []),
             "threshold": float(threshold),
             "scorer_version": SCORER_VERSION,
+            "filter_version": FILTER_VERSION,
         },
         sort_keys=True,
         ensure_ascii=False,
@@ -368,6 +386,7 @@ def match_resume(resume_id, config_index, query_id=None):
     state = load_state()
 
     threshold = float(config.get("threshold", DEFAULT_THRESHOLD))
+    exclude_employers = config.get("exclude_employers") or []
     queries = config["resumes"][config_index].get("queries", [])
     if not queries:
         print("В настройках нет поисковых запросов.")
@@ -419,6 +438,7 @@ def match_resume(resume_id, config_index, query_id=None):
     skipped_applied = 0
     skipped_no_description = 0
     skipped_area = 0
+    skipped_employer = 0
     stopped = False
 
     print_warning("Остановить оценку: нажми '0' (без Enter). Прогресс сохранится.")
@@ -432,6 +452,10 @@ def match_resume(resume_id, config_index, query_id=None):
 
         vid = v.get("id")
         if vid in processed_ids:
+            continue
+
+        if _is_excluded_employer(v.get("employer"), exclude_employers):
+            skipped_employer += 1
             continue
 
         if not _check_vacancy_area(v, query, resume_data):
@@ -462,6 +486,8 @@ def match_resume(resume_id, config_index, query_id=None):
         print(
             f"Пропущено (нет описания, будут проверены после загрузки): {skipped_no_description}"
         )
+    if skipped_employer:
+        print(f"Пропущено (работодатель в списке исключений): {skipped_employer}")
     if skipped_area:
         print(f"Пропущено (не подходит город или формат работы): {skipped_area}")
     print(f"Уже откликались (пропуск): {skipped_applied}")

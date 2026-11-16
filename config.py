@@ -800,6 +800,31 @@ def _action_change_portfolio(config):
     return True
 
 
+def _action_change_exclude_employers(config):
+    """Редактор списка работодателей-исключений.
+
+    Список глобальный (для всех резюме и запросов). Совпадение по названию
+    строгое (lower + strip), без fuzzy.
+    """
+    current = list(config.get("exclude_employers") or [])
+    result = _edit_selection(
+        current,
+        "Работодатели-исключения (совпадение по названию 100%)",
+        allow_empty=True,
+    )
+    if result is None:
+        return False
+    normalized = sorted({e.strip() for e in result if e and e.strip()})
+    if normalized == sorted({e.strip() for e in current if e and e.strip()}):
+        return False
+    config["exclude_employers"] = normalized
+    if normalized:
+        print_success(f"Список работодателей-исключений: {len(normalized)} шт.")
+    else:
+        print_success("Список работодателей-исключений пуст.")
+    return True
+
+
 def _list_queries_for_display(config):
     idx = 1
     for r_idx, r in enumerate(config["resumes"]):
@@ -835,8 +860,10 @@ def main_menu():
             print("\n(нет сохраненных запросов)")
 
         portfolio = (config.get("portfolio_url") or "").strip()
+        excl_emp = config.get("exclude_employers") or []
         print(f"\nПорог соответствия: {config.get('threshold', DEFAULT_THRESHOLD)}%")
         print(f"Портфолио: {portfolio if portfolio else 'не задан'}")
+        print(f"Работодателей-исключений: {len(excl_emp)}")
         if dirty:
             print_warning("\n  * Есть несохраненные изменения")
 
@@ -873,6 +900,14 @@ def main_menu():
                 "Изменить портфолио",
                 "URL портфолио добавляется в сопроводительные письма\n"
                 "отдельной строкой перед подписью",
+            )
+        )
+        options.append(
+            (
+                "exclude_employers",
+                "Работодатели-исключения",
+                "Вакансии этих работодателей не попадут в поиск.\n"
+                "Совпадение по названию 100%.",
             )
         )
         options.append(
@@ -915,6 +950,9 @@ def main_menu():
                 dirty = True
         elif choice == "portfolio":
             if _action_change_portfolio(config):
+                dirty = True
+        elif choice == "exclude_employers":
+            if _action_change_exclude_employers(config):
                 dirty = True
 
 
